@@ -1,0 +1,163 @@
+---
+title: "221024_Leaf_isocirc_Spri_Analysis"
+author: "Asa Budnick"
+date: "2022-11-09"
+output: html_document
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r import data}
+
+Full_dataset<-read.csv(file = "LeafSpri_Prep.info",header = F, sep="\t")
+
+colnames(Full_dataset)<-c("chrom","source","type","start","end","score","strand",".","attributes")
+
+#need to unpack attributes column into the useful information
+library(tidyr)
+library(stringr)
+
+FullSep<-separate(data=Full_dataset, col=attributes, into =c("circ_id","splice_site","equivalent_seq","circ_type","circ_len","isoform","gene_id","gene_name","gene_type"), sep= ";")
+
+FullSep$circ_id<-word(FullSep$circ_id, -1)
+FullSep$splice_site<-word(FullSep$splice_site, -1)
+FullSep$equivalent_seq<-word(FullSep$equivalent_seq, -1)
+FullSep$circ_type<-word(FullSep$circ_type, -1)
+FullSep$circ_len<-word(FullSep$circ_len, -1)
+FullSep$isoform<-word(FullSep$isoform, -1)
+FullSep$gene_id<-word(FullSep$gene_id, -1)
+FullSep$gene_name<-word(FullSep$gene_name, -1)
+FullSep$gene_type<-word(FullSep$gene_type, -1)
+
+#finished loading in and formatting the CIRI-long output
+```
+
+```{r annotate}
+
+#Read in gene annotation file
+annotation<-read.table(file="/Users/asabudnick/Documents/Grad_School/Research/CircRNA/ComputationalWork/220527_Lj_Nanopore/Lotusjaponicus_Gifu_v1.2_geneOntology.gaf", sep="\t", header=F, skip = 6)
+
+colnames(annotation)<-c("DB","DB Object ID", "DB Object Symbol","Qualifier","GO ID","DB:Reference_(IDB:Reference)","Evidence Code","With (or) From","Aspect","DB Object Name","DB Object Synonym (ISynonym)","DB Object Type","Taxon (Itaxon)","Date","Assigned By","Annotation Extension","Gene Product Form ID")
+
+#Before I can merge the datasets I need to manage the data some
+#CIRI2 ouptut gives geneID but not transcripts so I need to pull each of the transcripts for a given gene, to do this I can generate a geneID column in the GAF that strips the transcript number from the DB Object ID
+annotation$gene_id<-gsub(".[[:digit:]]$","",x = annotation$`DB Object ID`)
+
+#I also need to manage the edge case where a circRNA stretches across multiple genes
+#Probably best to do this by row
+library(tidyr)
+#Copy gene_ID into All-gene-IDs
+FullSep$all_gene_ids<-FullSep$gene_id
+#separate gene_id into multiple rows
+FullSep_gene_sep<-separate_rows(FullSep, gene_id, sep = ",")
+
+
+#Now I can merge
+Merged<-merge(x=FullSep_gene_sep, y=annotation, by="gene_id",all.x = T)
+#colnames(Merged)
+
+reordered_names<-c("circ_id","gene_id","score","circ_type","circ_len", "DB Object ID", "DB Object Name", "GO ID", "isoform", "chrom", "source","type","start","end","strand",                    
+".", "splice_site", "equivalent_seq","gene_name" ,"gene_type", "all_gene_ids",  "DB","DB Object Symbol","Qualifier","DB:Reference_(IDB:Reference)",
+"Evidence Code", "With (or) From" ,"Aspect",                  
+"DB Object Synonym (ISynonym)","DB Object Type",            
+"Taxon (Itaxon)","Date",
+"Assigned By", "Annotation Extension", 
+"Gene Product Form ID")
+
+Annotated_Circs<-Merged[,reordered_names]
+Annotated_Circs$circ_len<-as.numeric(Annotated_Circs$circ_len)
+```
+
+```{r add Reads Table }
+library(stringr)
+library(plyr)
+library(dplyr)
+
+  Reads_Table<-read.csv(file = "LeafSpri_Prep.reads", sep = "\t", header = T)
+str(Reads_Table)
+colnames(Reads_Table)
+#Play with a summary of the Reads table, calculating the max and average number of loops for each circRNA
+Reads_Table$loop_count <- str_count(Reads_Table$segments, ";")
+Loops_Summary <- Reads_Table %>%
+  group_by(circ_id) %>% 
+  summarise(max_loops = max(loop_count), average_loops = mean(loop_count) )
+
+#add in loops information to full_sep data 
+Loop_Included<-merge(Loops_Summary, Annotated_Circs, by = "circ_id")
+
+```
+```{r use the cand_circ.fa file to pull ccs}
+#if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("ShortRead")
+
+library(ggplot2)
+library(ShortRead)
+cand_circ<-readFasta(dirPath = "LeafSpri_Prep.cand_circ.fa")
+
+#for each circID find the read which has the most loops (should be best ccs)
+Circ_with_best_read<-Reads_Table %>% 
+  group_by(circ_id) %>% 
+  dplyr::slice(which.max(loop_count)) %>%
+  arrange(read_id,circ_id,loop_count)
+
+#For each tmp_id find a matching CCS 
+circ_cand_DF<-cbind(as.data.frame(cand_circ@id),as.data.frame(cand_circ@sread))
+colnames(circ_cand_DF)<-c("ID","CCS")
+circ_cand_DF_sep<-separate(circ_cand_DF, "ID", into = c("read_id","tmp_id","unk","coord","unkn","bsp?","segments"),sep="\t")
+
+#Merge in only one CCS per circRNA - this is a reduction in complexity and is throwing away information but provides a clean CCS for each circRNA at least
+#This CCS corresponds to the one with the most loops 
+Circs_With_Seq<-merge(Circ_with_best_read[,c(1,2)],circ_cand_DF_sep[,c(1,8)], by="read_id")
+
+#merge in the CCS to the main data-frame 
+
+Final_Annotated_Circs<-merge(Loop_Included,Circs_With_Seq, by="circ_id")
+
+
+
+```
+
+```{r}
+# add in annotations from GFF3 instead of GAF 
+
+gff <- read.delim(file="../Lotusjaponicus_Gifu_v1.2_predictedGenes (2).gff3", skip=8, header=F,na.strings = c(""," ")) #reading in your .gff file
+gff <- separate(data=gff,col=V9,into=c("GeneId","Product"),sep=";human_readable_description=") #creating separate columns
+gff$GeneId <- gsub("\\..*||\\:.*||\\;.*", "", sub("ID=", "", gff$GeneId)) #removing extra text
+gffProduct <- gff %>% group_by(GeneId) %>% summarize(Product=toString(sort(unique(Product)))) #creating new dataframe with all product info for each gene
+#old code gff$Product[is.na(gff$Product)] <- 0 #replacing NAs in Product column to avoid data loss
+#above line works but is not helpful in avoiding data loss
+Annotated_Circs$GFF_Anno<-gffProduct[match(Annotated_Circs$gene_id,gffProduct$GeneId),]$Product
+
+Final_Annotated_Circs2<-merge(Final_Annotated_Circs,unique(Annotated_Circs[,c(1,36)]), by="circ_id")
+
+#install.packages("xlsx")
+
+library("xlsx")
+
+#one cell is over 32,767 characters which is too much for an excel file - need to find and truncate contents of that cell.. 
+for (i in 1:40){
+  print(i)
+  print(max(nchar(Final_Annotated_Circs2[,i]),na.rm = T))
+  print(which.max(nchar(Final_Annotated_Circs2[,i])))
+}
+#problem is in DB object name column, since most of this information is unnecessary and repetitive for the downstream analyses truncate this column to only the first 1000 characters. 
+trunctest<-as.data.frame(str_trunc(Final_Annotated_Circs2[,9], 1000, side="right"))
+Final_Annotated_Circs2$`DB Object Name`<-trunctest$`str_trunc(Final_Annotated_Circs2[, 9], 1000, side = "right")`
+
+#worked 
+write.xlsx(x=Final_Annotated_Circs2,file = "221024_leaf_spri_Full_Annotated_isoCirc-Prep_CIRI-long-Analsis.xls")
+write.table(x = Final_Annotated_Circs2, file = "221024_leaf_spri_Full_Annotated_isoCirc-Prep_CIRI-long-Analsis.tsv",sep = 
+            "\t")
+
+
+```
+
+
+```{r session info}
+
+sessionInfo()
+```
