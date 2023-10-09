@@ -1,0 +1,1680 @@
+---
+title: "Combined_Leaf_Analysis"
+author: "Asa Budnick"
+date: "2023-07-12"
+output: html_document
+---
+
+```{r setup-chunk}
+knitr::opts_chunk$set(dev = "png",
+                      dpi = 300,
+                      echo = TRUE,
+                      cache = TRUE)
+```
+
+Overall analysis plan: 
+1) import data from each of the 4 run types (Nanopore, CIRI2, Circexplorer3, and CircPanel_LRS)
+2) Simplify these down to just the information that is unique per circRNA (ID, run conditions, coordinates)
+3) Combine into a single dataframe
+4) Eliminate those circRNAs with start or end coordinates within 5bp of an annotated repeat
+4b) Calculate IR for CircRNAs in Nanopore dataset - graph distributions and eliminate those with IRs that are too high 
+5) Cluster circRNAs based on Manhattan distance. Any circRNAs near neighbors within or across runs get clustered (these circRNAs are all considered identical) and the cluster is given a new circRNA-ID
+6) make venn diagrams and other figures - preliminary analysis 
+7) Published Figures
+8) Summary Stats 
+9) Data Export
+10) Testing and Deprecated
+
+
+
+1) import data from each of the 4 run types (Nanopore, CIRI2, Circexplorer3, and CircPanel_LRS)
+```{r Import and label Nanopore Data}
+
+Recent_leaf<-read.table(file="221220_Lj_Leaf_Full_Annotated_CIRI-long-Analsis.tsv")
+#^updated
+
+Leaf_Spri<-read.table(file="221024_leaf_spri_Full_Annotated_CIRI-long-Analsis.tsv")
+
+
+
+Leaf_Bluepippin<-read.table(file="220729_Leaf_bluepippin_isocirc_Full_Annotated.tsv")
+
+  
+Leaf_Bluepippin$Run<-"Leaf_Bluepippin"
+Leaf_Bluepippin$Prep<-"Nanopore"
+Leaf_Bluepippin$Tissue<-"Leaf"
+  
+Leaf_Spri$Run<-"Leaf_Spri"
+Leaf_Spri$Prep<-"Nanopore"
+Leaf_Spri$Tissue<-"Leaf"
+  
+Recent_leaf$Run<-"Recent_Leaf"
+Recent_leaf$Prep<-"Nanopore"
+Recent_leaf$Tissue<-"Leaf"
+
+```
+
+```{r Merge Nanopore dataframes}
+Nanopore<-rbind(Leaf_Bluepippin,Leaf_Spri,Recent_leaf)
+Nanopore$replicate<-1
+```
+
+```{r add in CIRI2 data}
+library(readxl)
+library(stringr)
+library(dplyr)
+CIRI2_data<-read_xlsx("CIRI2_Data.xlsx")
+
+
+CIRI2_data$circRNA_ID<-gsub(x=CIRI2_data$circRNA_ID, pattern="\\|", replacement="-")
+
+CIRI2_data$Run<-"Short_read"
+CIRI2_data$Prep<-"CIRI2"
+CIRI2_data$Tissue<-"Leaf"
+CIRI2_data$replicate<-stringr::str_to_upper(gsub(x=CIRI2_data$Treatment, pattern="_",replacement = ""))
+```
+
+```{r add in CLEAR data}
+LC1 <- read.csv(file="Lc1_quant_annot_reads.csv", header = T)
+LC3 <-read.csv(file = "Lc3_quant_annot_reads.csv",T)
+LC4 <- read.csv(file = "Lc4_quant_annot_reads.csv",T)
+
+LC1$replicate<-"LC1"
+LC3$replicate<-"LC3"
+LC4$replicate<-"LC4"
+
+
+#add in Run, prep, and tissue
+CX3<-bind_rows(LC1,LC3,LC4)
+CX3$Run<-"Short_read"
+CX3$Prep<-"CLEAR"
+CX3$Tissue<-"Leaf"
+
+```
+
+```{r add in circpanel-LRS data}
+CircPANEL<-read.table(file = "../230613_circPanel2_analysis/All_Reads/CircPanelLRS_Cirilong_Results_annotated.tsv")
+
+CircPANEL$Run<-"CircPanel-LRS"
+CircPANEL$Prep<-"CircPanel-LRS"
+CircPANEL$Tissue<-"Leaf"
+CircPANEL$replicate<-"1"
+
+```
+2) Simplify these down to just the information that is unique per circRNA (ID, run conditions, coordinates, replicate)
+
+```{r Simplify and deduplicate datasets to level of only circID, prep, tissue, Run, and replicate, include chrom start and stop for bsj alignment with tolerance}
+
+Nanopore_Simplest<-unique(Nanopore[,c(1,41:44,12,15,16)])
+
+CIRI2_Simplest<-unique(CIRI2_data[which(CIRI2_data$Treatment %in% c(                          "Lc_1_","Lc_3_","Lc_4_")),c(2,14:17,3,4,5)])
+colnames(CIRI2_Simplest)<-colnames(Nanopore_Simplest)
+CX3$circRNA_ID<-paste0(CX3$chrom,":",CX3$start,"-",CX3$end,sep="")
+str(CX3$circRNA_ID)
+
+CX3_Simplest<-unique(CX3[,c(29,26,27,28,25,1,2,3)])
+colnames(CX3_Simplest)<-colnames(Nanopore_Simplest)
+
+CircPANEL_Simplest<-unique(CircPANEL[,c(1,41:44,12,15,16)])
+colnames(CircPANEL_Simplest)<-colnames(Nanopore_Simplest)
+
+```
+
+
+
+```{r pull size,type, and gene data into full data simplest}
+library(tidyr)
+Nano_Size_and_Type<-unique(Nanopore[,c(1,7,6,4)])
+colnames(Nano_Size_and_Type)
+
+
+#need to calculate ciri size 
+CIRI2_data$circ_len<-abs(CIRI2_data$circRNA_start - CIRI2_data$circRNA_end)
+
+#need to sanitize and separate CIRI2 gene_ID data 
+CIRI2_data$gene_id<-gsub(pattern = ",$", replacement = "",x=CIRI2_data$gene_id)
+CIRI2<-separate_rows(CIRI2_data, gene_id, sep = ",")#separate for the case where a single circRNA has multiple geneIDs
+CIRI2<-CIRI2[which(CIRI2$Treatment %in% c(                          "Lc_1_","Lc_3_","Lc_4_")),]
+
+CIRI2_Size_and_Type<-unique(CIRI2[,c(2,18,10,11)])
+
+colnames(CIRI2_Size_and_Type)<-colnames(Nano_Size_and_Type)
+
+
+#need to calculate CLEAR size 
+unique(CX3$circType) #The types given by CLEAR are entirely different than the types given by CIRI-long and CIRI2 
+CX3$circ_len<-abs(CX3$start- CX3$end)
+CX3_Size_and_Type<-unique(CX3[,c(29,30,14,15)])
+colnames(CX3_Size_and_Type)<-colnames(Nano_Size_and_Type)
+
+Size_and_type_Info<-unique(rbind(Nano_Size_and_Type, CIRI2_Size_and_Type, CX3_Size_and_Type))
+
+
+
+```
+
+3) Combine into a single data-frame
+```{r Merge all data into a single dataframe}
+Full_data_simplest<-rbind(Nanopore_Simplest,CIRI2_Simplest,CX3_Simplest,CircPANEL_Simplest)
+
+#rejoin size and type with full data simplest 
+Full_data_size_and_type<-merge(Full_data_simplest, Size_and_type_Info, by="circ_id")
+#Remove CircPanel For now 
+Full_data_size_and_type<-Full_data_size_and_type[-which( Full_data_size_and_type$Prep=="CircPanel-LRS"),]
+```
+
+4) Eliminate those circRNAs with start or end coordinates within 5bp of an annotated repeat 
+
+```{r Generate repeat overlap regions using the repeat gff3 from Gifu_V1.2}
+
+
+repeat_gff3 <- read.delim(file="../Lotusjaponicus_Gifu_v1.2_repeats.gff3", skip=1, header=F,na.strings = c(""," ")) 
+#pull coordinates only from gff3 for those repeat elements that seem likely to be problematic for circRNAs 
+repeattypes<-c("Simple_repeat","Low_complexity","Satelite","Other")
+Repeat_coords<-repeat_gff3[which(repeat_gff3$V3 %in% repeattypes),c(1,4,5)]
+
+unique(Full_data_simplest$chrom)
+unique(Repeat_coords$V1)
+
+
+colnames(Repeat_coords)<-c("chrom","start","end")
+#adjust all repeat coords by -5 start and +5 end in order to accept a window around the back splice junction 
+Repeat_coords$start<-Repeat_coords$start - 5 
+Repeat_coords$end<-Repeat_coords$end + 5 
+
+unique(Full_data_simplest$chrom) %in% unique(Repeat_coords$chrom)
+rownames(Full_data_simplest)<-NULL
+Full_data_simplest$Repeat_overlap<-NA
+suppressWarnings(
+  for(i in 1:length(Full_data_simplest$circ_id)){
+  temp_chrom_level_repeats<- Repeat_coords[which(Repeat_coords$chrom==Full_data_simplest$chrom[i]),]
+  Full_data_simplest$Repeat_overlap[i]<-sum(((Full_data_simplest$start[i] >= temp_chrom_level_repeats$start & Full_data_simplest$start[i] <= temp_chrom_level_repeats$end) | (Full_data_simplest$end[i] >= temp_chrom_level_repeats$start & Full_data_simplest$end[i] <= temp_chrom_level_repeats$end)))
+}
+)
+
+
+```
+
+
+```{r generate plot of repeat overlap}
+library(ggplot2)
+#make a plot to show which circRNAs are removed by overlap with repeats per condition
+Full_repeat_overlap_plot<-ggplot(Full_data_simplest, aes(x=Repeat_overlap, fill=Prep))+
+  geom_bar(stat="count",position='dodge')
+Full_repeat_overlap_plot
+
+png("Repeat_overlap_plot_NocircFL.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(Full_repeat_overlap_plot)
+while (!is.null(dev.list()))  dev.off()
+
+```
+
+
+4b) Use IR to calculate index of repetitiveness. Annotate Circs with IR, examine distribution, and cull Circs with very repetitive sequences. 
+
+```{r define a wrapper function for IR}
+
+library(universalmotif)
+
+library(seqinr)
+#Function takes as input circID and CCS
+CircIR<- function(ID, Seq){
+  write.fasta(sequences = Seq, names= ID, file.out = "temp.fasta")
+  IRTest<-as.numeric(str_split(system2(command = "/Users/asabudnick/bin/ir", 
+        args=c("-i", "temp.fasta"),
+        stdout=T)[2],pattern="\\t")[[1]][2])
+  #add in GC info 
+  gc<-GC(seq =s2c(Seq))
+  Trifonov<- calc_complexity(string=Seq,complexity.method = "Trifonov")
+  #print(IRTest)
+  return(c(ID,IRTest,Trifonov,gc))
+}
+
+```
+
+```{r Apply IR to full nanopore dataset}
+nano_uniq_seq<-unique(cbind.data.frame(Nanopore$circ_id,Nanopore$CCS))
+colnames(nano_uniq_seq)<-c("circ_id","CCS")
+
+IR_results<-as.data.frame(t(mapply(CircIR, nano_uniq_seq$circ_id,nano_uniq_seq$CCS)))
+
+colnames(IR_results)<-c("circ_id","IR","Trifonov","GC%")
+IR_results<-merge(IR_results,nano_uniq_seq,by='circ_id')
+colnames(IR_results)<-c("circ_id","IR","Trifonov","GC%","CCS")
+
+```
+
+```{r visualize IR results}
+
+hist(x=as.numeric(as.data.frame(IR_results)$IR))
+#while this function works it is also the case that some CCS have relatively low IR scores and still show repetitive elements - these can likely be caught by GC and size filters since the random shuffling employed by IR is based on size and GC content (ex. if a 100% GC genome has an unusually long string of Gs as a unique string it may still score less repetitive than the shuffled genome)
+```
+```{r histogram of trifonov}
+hist(x=as.numeric(as.data.frame(IR_results)$Trifonov))
+#Spike of very low complexity
+```
+```{r Compare IR to Trifonov}
+IR_Trifonov_Plot<-ggplot(IR_results)+
+  geom_point(aes(x=as.numeric(IR), y=as.numeric(Trifonov)), alpha=.3)
+
+IR_Trifonov_Plot
+```
+
+
+```{r play with Plotly}
+library(plotly)
+IR_Trifonov_Plotly<-plot_ly(data = IR_results, y=as.numeric(IR_results$Trifonov), x=as.numeric(IR_results$IR)) %>% 
+  add_trace(type='scatter', mode = 'markers', text=IR_results$CCS, hoverinfo='text')
+  
+  
+IR_Trifonov_Plotly
+#Seems that reasonable cutoffs are >.1 for Trifonov and <.2 for IR 
+
+```
+
+```{r merge in IR results and show a graph with IR, size, and GC}
+Nanopore_simplest_Plus<-merge(Nano_Size_and_Type,IR_results, by="circ_id")
+Nanopore_simplest_Plus<-merge(Nanopore_Simplest,Nanopore_simplest_Plus,by="circ_id")
+
+Nanopore_simplest_Plus$IR<-as.numeric(Nanopore_simplest_Plus$IR)
+Nanopore_simplest_Plus$`GC%`<-as.numeric(Nanopore_simplest_Plus$`GC%`)
+
+IR_size_GC_Plot<-ggplot(Nanopore_simplest_Plus)+
+  geom_point(aes(x=IR, y=circ_len,color=`GC%`), alpha=.3)+
+  facet_wrap(~Run)
+
+IR_size_GC_Plot
+```
+
+
+```{r add in the repeat overlap info and make a plot to display it}
+Nanopore_simplest_Plus_comp<-merge(Nanopore_simplest_Plus, Full_data_simplest[,c(1,9)], by="circ_id")
+
+IR_size_GC_repeat_Plot<-ggplot(Nanopore_simplest_Plus_comp)+
+  geom_point(aes(x=IR, y=circ_len,color=`GC%`), alpha=.3)+
+  facet_wrap(~Repeat_overlap+Run)
+
+IR_size_GC_repeat_Plot
+
+```
+
+```{r plot GC on the y axis}
+
+IR_size_GC_repeat_Plot2<-ggplot(Nanopore_simplest_Plus_comp)+
+  geom_point(aes(x=IR, y=`GC%`,color=circ_len), alpha=.3)+
+  facet_wrap(~Repeat_overlap+Run)
+
+IR_size_GC_repeat_Plot2
+
+```
+
+
+```{r examine discrepency between the stated circRNA length and the length of CCS }
+#calculate circ length based on CCS 
+Nanopore_simplest_Plus_comp$ccs_len<-nchar(Nanopore_simplest_Plus_comp$CCS)
+
+length_comp_plot<-ggplot(data=Nanopore_simplest_Plus_comp,aes(x=circ_len,y=ccs_len))+
+  geom_point()
+length_comp_plot
+
+Nanopore_simplest_Plus_comp$Size_diff<-abs(Nanopore_simplest_Plus_comp$circ_len - Nanopore_simplest_Plus_comp$ccs_len)
+
+#need to reexamine where circ_len is coming from 
+```
+
+```{r filter nanopore and see how the set looks}
+Filtered_nanopore<-Nanopore_simplest_Plus_comp %>% 
+  filter(IR<=.2) %>% 
+  filter(Repeat_overlap==0) %>% 
+  filter(Trifonov>=.1)
+
+
+length(unique(Nanopore_simplest_Plus_comp$circ_id))
+length(unique(Filtered_nanopore$circ_id))
+
+
+6768-4543
+#with adjusted repeat overlap params
+6768-4456
+
+2225/6768
+#2225 circRNAs are queued to be filtered aproximately 1/3rd of the unique circRNAs
+
+#with adjusted params
+2312/6768
+#2312 are now removed which is 34% 
+```
+
+```{r label those that are cut in filtering and examine how they look on the plot}
+Nanopore_simplest_Plus_comp$Cut<-"Cut"
+Nanopore_simplest_Plus_comp$Cut[Nanopore_simplest_Plus_comp$circ_id %in% Filtered_nanopore$circ_id]<-"Kept"
+
+
+Filtered_plotly<-plot_ly(data = Nanopore_simplest_Plus_comp, y= as.numeric(Nanopore_simplest_Plus_comp$Trifonov), x=~IR, color = ~as.factor(Cut)) %>% 
+  add_trace(type='scatter', mode = 'markers', text=Nanopore_simplest_Plus_comp$CCS, hoverinfo='text')
+  
+  
+Filtered_plotly
+#some circRNAs are identified as kept despite not passing filtering critera 
+#This is because they have identical IDs but different CCS and quality metrics. Only those with good quality metrics are passed forward 
+```
+
+```{r Make a dataset of only those circRNAs which pass filtering}
+Filtered_simplest<-Full_data_simplest[(Full_data_simplest$Repeat_overlap==0 &Full_data_simplest$Prep!="Nanopore"), ]
+Full_data_simplest$circ_len<-Full_data_simplest$end - Full_data_simplest$start
+#Filter illumina circRNAs by a length less than 10000 
+Filtered_simplest$circ_len<-Filtered_simplest$end - Filtered_simplest$start 
+
+Filtered_simplest<-Filtered_simplest[Filtered_simplest$circ_len<10000,]
+Filtered_simplest<-rbind.data.frame(Filtered_simplest,unique(Filtered_nanopore[,c(1:8,16,9)]))
+
+
+```
+
+5) Cluster circRNAs based on Manhattan distance. Any circRNAs near neighbors within or across Runs get clustered (these circRNAs are all considered identical) and the cluster is given a new circRNA-ID (a list of each circID in the original cluster)
+
+
+```{r implement clustering on full dataset}
+
+Clust_Format<-Filtered_simplest[,c(1,6:8)]
+
+str(Clust_Format)
+
+
+Clust_Format<-unique(Clust_Format)
+rownames(Clust_Format)<-make.names(Clust_Format$circ_id) # need to make.names in order to allow the unusual characters in circRNA IDs
+
+Clust_Format<-Clust_Format[,-1]
+
+
+forloop_cluster_dataframe<-data.frame()
+for( chr in unique(Clust_Format$chrom)){
+  chromset<-Clust_Format[Clust_Format$chrom==chr,2:3]
+  testdist<-dist(chromset,  method = "manhattan")
+  heirarch_clust <- hclust(testdist, method="complete",)
+  trimmed_clust <- cutree(heirarch_clust, h=10)
+  names_list<-split(names(trimmed_clust), trimmed_clust)
+  forloop_cluster_dataframe<-dplyr::bind_rows(forloop_cluster_dataframe,plyr::ldply(names_list,rbind))
+}
+
+#format names back to original circIDs 
+cluster_renamed<-as.data.frame(lapply(forloop_cluster_dataframe, FUN = function(x) sub("(^.*_.*)\\.(\\d*)\\.(\\d*)", "\\1:\\2-\\3",x)))
+
+cluster_renamed$New_circ_ID<-with(cluster_renamed, paste0(X1,",",X2,",",X3))
+cluster_renamed$New_circ_ID<-gsub(",NA","",cluster_renamed$New_circ_ID)
+```
+
+```{r label circRNAs in the full filtered dataset with the names of the clusters}
+#clusters of one and first member of clusters 
+Filtered_simplest$New_ID<-cluster_renamed$New_circ_ID[match(Filtered_simplest$circ_id, cluster_renamed$X1)]
+
+# second member of clusters 
+Filtered_simplest$New_ID[is.na(Filtered_simplest$New_ID)]<-cluster_renamed$New_circ_ID[match(Filtered_simplest$circ_id[is.na(Filtered_simplest$New_ID)], cluster_renamed$X2)]
+
+# third member of clusters 
+Filtered_simplest$New_ID[is.na(Filtered_simplest$New_ID)]<-cluster_renamed$New_circ_ID[match(Filtered_simplest$circ_id[is.na(Filtered_simplest$New_ID)], cluster_renamed$X3)]
+
+
+
+#test to ensure all circRNAs have a new name 
+sum(is.na(Filtered_simplest$New_ID))
+#passes 
+
+head(table(unique(cbind(Filtered_simplest$New_ID, Filtered_simplest$Run))))
+
+```
+
+6) make venn diagrams and other figures 
+
+```{r full data prep comparison}
+library(ggVennDiagram)
+length(unique(Filtered_simplest$New_ID))
+unique(Filtered_simplest$Prep)
+All_sets<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="Nanopore" ]), CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]), CircExplorer3=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]), CircPanel=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CircPanel-LRS"]))
+     
+All_sets_vd<-ggVennDiagram(All_sets)
+All_sets_vd
+
+png("All_sets_most_recent_clustering_NoCIRCFL_updatedFiltering.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(All_sets_vd)
+while (!is.null(dev.list()))  dev.off()
+```
+
+##make other comparisons 
+```{r nanopore Run comparisons}
+unique(Filtered_simplest$Run)
+Nanopore_Run_set<-list(Leaf_Bluepippin=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Bluepippin"]),Leaf_Spri=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Spri"]),Recent_Leaf=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Recent_Leaf"]))
+
+Nanopore_RunVD<-ggVennDiagram(Nanopore_Run_set)
+Nanopore_RunVD
+
+png("Nanopore_Run_vd_noCircFL_v2.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(Nanopore_RunVD)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r nanopore vs ciri2 vs clear venn diagram }
+Ind_Datasets_comp<-list(Leaf_Bluepippin=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Bluepippin"]),Leaf_Spri=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Spri"]),Recent_Leaf=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Recent_Leaf"]),CircExplorer3=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]),CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]))
+
+Ind_Datasets_comp_vd<-ggVennDiagram(Ind_Datasets_comp,label = 'count',set_size = 2)
+Ind_Datasets_comp_vd
+
+png("Individual_datasets_comp_VD_no_CircFL.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(Ind_Datasets_comp_vd)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r Nanopore vs Illumina VennDiagram}
+unique(Filtered_simplest$Prep)
+Nano_Vs_Illum_set<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="Nanopore" ]), Illumina=unique(Filtered_simplest$New_ID[(Filtered_simplest$Prep=="CIRI2" |Filtered_simplest$Prep=="CLEAR")]))
+     
+Nano_Vs_Illum_vd<-ggVennDiagram(Nano_Vs_Illum_set)
+Nano_Vs_Illum_vd
+
+png("Nanopore_Vs_Illumina_vd.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(Nano_Vs_Illum_vd)
+while (!is.null(dev.list()))  dev.off()
+```
+```{r CIRI2 replicate Venn Diagram }
+unique(Filtered_simplest$replicate)
+CIRI2_Replicate_set<-list(Replicate_1=unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC1" & Filtered_simplest$Prep=="CIRI2")]), Replicate_2=unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC3" & Filtered_simplest$Prep=="CIRI2")]),Replicate_3= unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC4" & Filtered_simplest$Prep=="CIRI2")]))
+     
+CIRI2_Replicate_vd<-ggVennDiagram(CIRI2_Replicate_set)
+CIRI2_Replicate_vd
+
+png("CIRI2_Replicate_venn_Diagram.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(CIRI2_Replicate_vd)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r CLEAR replicate Venn Diagram }
+unique(Filtered_simplest$replicate)
+CLEAR_Replicate_set<-list(Replicate_1=unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC1" & Filtered_simplest$Prep=="CLEAR")]), Replicate_2=unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC3" & Filtered_simplest$Prep=="CLEAR")]),Replicate_3= unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC4" & Filtered_simplest$Prep=="CLEAR")]))
+     
+CLEAR_Replicate_vd<-ggVennDiagram(CLEAR_Replicate_set)
+CLEAR_Replicate_vd
+
+png("CLEAR_Replicate_venn_Diagram.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(CLEAR_Replicate_vd)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r illumina Combined CirI and CLEAR replicate level VD}
+unique(Filtered_simplest$replicate)
+Full_Illumina_Replicate_set<-list(Replicate_1=unique(Filtered_simplest$New_ID[Filtered_simplest$replicate=="LC1"]), Replicate_2=unique(Filtered_simplest$New_ID[Filtered_simplest$replicate=="LC3" ]),Replicate_3= unique(Filtered_simplest$New_ID[Filtered_simplest$replicate=="LC4"]))
+     
+Full_Illumina_Replicate_vd<-ggVennDiagram(Full_Illumina_Replicate_set)
+Full_Illumina_Replicate_vd
+
+png("Full_Illumina_Replicate_venn_Diagram.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(Full_Illumina_Replicate_vd)
+while (!is.null(dev.list()))  dev.off()
+
+```
+```{r examine the replicate set list as a 6 part venn diagram rather than as a summed 3 part}
+
+Sixpart_illum_rep_list<-list(CIRI2_1=unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC1" & Filtered_simplest$Prep=="CIRI2")]), CIRI2_2=unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC3" & Filtered_simplest$Prep=="CIRI2")]),CIRI2_3= unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC4" & Filtered_simplest$Prep=="CIRI2")]),CLEAR_1=unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC1" & Filtered_simplest$Prep=="CLEAR")]), CLEAR_2=unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC3" & Filtered_simplest$Prep=="CLEAR")]),CLEAR_3= unique(Filtered_simplest$New_ID[(Filtered_simplest$replicate=="LC4" & Filtered_simplest$Prep=="CLEAR")]))
+
+Sixpart_illum_rep_vd<-ggVennDiagram(Sixpart_illum_rep_list)
+Sixpart_illum_rep_vd
+
+png("SixPart_Illumina_Replicate_venn_Diagram.png", family = "ArialMT", units = "cm",
+     width = 12, height = 10, pointsize = 18, res = 300)
+print(Sixpart_illum_rep_vd)
+while (!is.null(dev.list()))  dev.off()
+
+```
+
+
+```{r size plot}
+
+
+if (!require("ggbeeswarm", quietly = TRUE)){
+    install.packages('ggbeeswarm')}
+
+library(ggbeeswarm)
+#define cbpallete
+cbPalette <- c("#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7")
+
+Full_Size_Type_Plot<-ggplot(Full_data_size_and_type, aes(x=Prep, y=as.numeric(circ_len)))+
+  geom_violin(color=NA)+
+  geom_quasirandom(aes(color=circ_type), alpha=.4)+
+  theme_minimal()+
+  scale_color_viridis_d( name="Type")+
+  xlab(label = "Condition")+
+  ylab(label = "Length (bp)")+
+  theme(text=element_text(size=20),legend.position = "bottom", strip.text = element_blank(), axis.title.x = element_blank(),)+
+  labs(title ="Short Read CircRNA Type and Size Across Conditions ")
+Full_Size_Type_Plot
+
+png("Full_Size_Type_Plot.png", family = "ArialMT", units = "cm",
+     width = 20, height = 14, pointsize = 18, res = 400)
+print(Full_Size_Type_Plot)
+while (!is.null(dev.list()))  dev.off()
+
+```
+
+```{r sizes as histogram}
+
+Full_Size_histogram<-ggplot(Full_data_size_and_type,aes(x=circ_len))+
+  geom_histogram()+
+  facet_wrap(~Prep)
+Full_Size_histogram
+
+#looking into filtering 
+#what percentage of CLEAR and CIRI2 are over 10kb 
+sum(Full_data_size_and_type$circ_len[Full_data_size_and_type$Prep == "CIRI2"]>10000)
+#97 CIRI2 circRNAs (pre-clustering) are above 10kb 
+sum(Full_data_size_and_type$circ_len[Full_data_size_and_type$Prep == "CLEAR"]>10000)
+#28 CLEAR circRNAs (pre-clustering) are above 10kb 
+largCircx3<-Full_data_size_and_type[(Full_data_size_and_type$Prep == "CLEAR" & Full_data_size_and_type$circ_len > 10000),]
+largCIRI2<-Full_data_size_and_type[(Full_data_size_and_type$Prep == "CIRI2" & Full_data_size_and_type$circ_len > 10000),]
+#there are aproximately 4 circRNAs in common between these two sets of large circRNAs, many of the ones in common are found in multiple replicates (though this does not mean that they are not false positives) 
+
+```
+
+```{r show only the size histogram for CIRI2}
+CIRI2_Size_histogram<-ggplot(Full_data_size_and_type[Full_data_size_and_type$Prep=="CIRI2",],aes(x=circ_len))+
+  geom_histogram()
+CIRI2_Size_histogram
+```
+
+```{r limit dataset to exonic and look at size}
+unique(Full_data_size_and_type$circ_type)
+
+Exonic_size_and_type<-Full_data_size_and_type[(Full_data_size_and_type$circ_type=="exon" | Full_data_size_and_type$circ_type=="circRNA"),]
+
+ExonCirc_Size_Type_Plot<-ggplot(Exonic_size_and_type, aes(x=Prep, y=as.numeric(circ_len)))+
+  geom_violin()+
+  #geom_quasirandom(aes(color=circ_type), alpha=.4)+
+  theme_minimal()+
+  scale_color_viridis_d( name="Chrom")+
+  xlab(label = "Condition")+
+  ylab(label = "Length (bp)")+
+  theme(text=element_text(size=20),legend.position = "bottom", strip.text = element_blank(), axis.title.x = element_blank(),)+
+  labs(title ="Short Read CircRNA Type and Size Across Conditions ")
+ExonCirc_Size_Type_Plot
+
+png("Exon_only_Size_Type_Plot.png", family = "ArialMT", units = "cm",
+     width = 20, height = 14, pointsize = 18, res = 400)
+print(ExonCirc_Size_Type_Plot)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r remove outliers and recompute}
+#this may not be the best way of removing outliers since these are not homoscedastic across preps #redone with filtering sub10kb 
+#outliers<-boxplot(Exonic_size_and_type$circ_len,plot=F)$out
+Exonic_Sub10kb<-Exonic_size_and_type[-which(Exonic_size_and_type$circ_len >10000),]
+
+library(ggbeeswarm)
+Exonic_minus_outliers_plot<-ggplot(Exonic_Sub10kb, aes(x=Prep, y=as.numeric(circ_len)))+
+  geom_violin()+
+  #geom_quasirandom(aes(color=chrom), alpha=.4)+
+  theme_minimal()+
+  #scale_color_viridis_d(name="Chrom")+
+  xlab(label = "Condition")+
+  ylab(label = "Length (bp)")+
+  theme(text=element_text(size=20),legend.position = "bottom", strip.text = element_blank(), axis.title.x = element_blank(),)+
+  labs(title ="Exonic CircRNA Sizes Across Prep Methods")
+Exonic_minus_outliers_plot
+
+png("Exon_minus_outliers_Size_Plot.png", family = "ArialMT", units = "cm",
+     width = 20, height = 14, pointsize = 18, res = 400)
+print(Exonic_minus_outliers_plot)
+while (!is.null(dev.list()))  dev.off()
+
+
+```
+
+
+```{r Type Chrom Plot}
+#Look at type across prep and chromosome
+Type_chrom_plot<-ggplot(Full_data_size_and_type, aes(x=Prep, fill=circ_type))+
+  geom_bar(position="dodge",stat = )+
+  scale_fill_viridis_d(name="CircRNA Type")+
+  ylab("Count")+
+  facet_wrap(~chrom)
+Type_chrom_plot
+
+
+png("Type_chrom_plot.png", family = "ArialMT", units = "cm",
+     width = 20, height = 14, pointsize = 18, res = 400)
+print(Type_chrom_plot)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r just type plot as percentage}
+
+#Look at type across prep and chromosome
+Type_only_plot<-ggplot(Full_data_size_and_type, aes(x=Prep, fill=circ_type))+
+  geom_bar(position="fill",stat = )+
+  scale_fill_viridis_d(name="CircRNA Type")+
+  ylab("Percent")
+Type_only_plot
+
+
+png("Type_only_plot.png", family = "ArialMT", units = "cm",
+     width = 20, height = 14, pointsize = 18, res = 400)
+print(Type_only_plot)
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r Compare Gene lists for the preps}
+
+Gene_Prep_Comp<-list(Nanopore=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="Nanopore"]), CIRI2=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CIRI2"]),CircExplorer3=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CLEAR"]))
+
+Gene_Prep_Comp_VD<-ggVennDiagram(Gene_Prep_Comp)
+Gene_Prep_Comp_VD
+
+png("Gene_list_comp_VD.png", family = "ArialMT", units = "cm",
+     width = 20, height = 14, pointsize = 18, res = 400)
+print(Gene_Prep_Comp_VD)
+while (!is.null(dev.list()))  dev.off()
+```
+
+
+```{r see if exonic circRNAs are found in a more similar gene set then others}
+
+
+Exon_Gene_Prep_Comp<-list(Nanopore=unique(Exonic_size_and_type$gene_id[Exonic_size_and_type$Prep =="Nanopore"]), CIRI2=unique(Exonic_size_and_type$gene_id[Exonic_size_and_type$Prep =="CIRI2"]),CircExplorer3=unique(Exonic_size_and_type$gene_id[Exonic_size_and_type$Prep =="CLEAR"]))
+
+Exon_Gene_Prep_Comp_VD<-ggVennDiagram(Exon_Gene_Prep_Comp)
+Exon_Gene_Prep_Comp_VD
+
+png("Exon_Gene_list_comp_VD.png", family = "ArialMT", units = "cm",
+     width = 20, height = 14, pointsize = 18, res = 400)
+print(Exon_Gene_Prep_Comp_VD)
+while (!is.null(dev.list()))  dev.off()
+
+```
+Doesn't appear that there is any more conservation between genes that contain exonic circRNAs vs genes with any type of circRNA. There is however an increase in the CIRI2-CLEAR set vs the nanopore conserved sets. This may indicate that when the same gene is captured nanopore is more likely to discover or assign an intronic circRNA . . . 
+
+
+```{r Examine CLEAR ratios}
+#install.packages("ggpubr")
+library(ggpubr)
+#install.packages("ggstatsplot")
+library(ggstatsplot)
+
+filtered_ids<-Filtered_simplest[,c(1,11)]
+colnames(filtered_ids)<-c("circRNA_ID","Cluster_ID")
+
+CX3_pass_rename<-CX3[which(CX3$circRNA_ID %in% filtered_ids$circRNA_ID),]
+#first lets construct our dataset of only those in CLEAR which pass filtering, remove read name and read info to get rid of duplicates
+CLEAR_Pass<-unique(merge(CX3_pass_rename, filtered_ids,by="circRNA_ID"))
+CLEAR_Pass<-unique(CLEAR_Pass[,-c(24,25)])
+#may want to consider limiting data to circs with more than X reads (3?)
+#first let's plot linear vs circular - maybe do a linear regression too
+Circ_ratio_plot<-ggplot(CLEAR_Pass, aes(x=FPBcirc, y=FPBlinear, color=readNumber))+
+  geom_point()
+Circ_ratio_plot
+
+#Can also figure out if the ratios look different between the two types 
+Circ_ratio_plot2<-ggplot(CLEAR_Pass, aes(x=FPBcirc, y=FPBlinear, color=circType))+
+  geom_point(alpha=.3)
+Circ_ratio_plot2
+#check normality real quick for the datasets by type for FPBcirc and FPBlinear
+qq<-ggplot(CLEAR_Pass,aes(sample = FPBcirc)) +
+  geom_qq() + geom_qq_line() +
+  facet_wrap(~circType, scales = "free_y")
+qq
+#fpb circ is definitely not normally distributed
+qq2<-ggplot(CLEAR_Pass,aes(sample = FPBlinear)) +
+  geom_qq() + geom_qq_line() +
+  facet_wrap(~circType, scales = "free_y")
+qq2
+#also not normal 
+
+
+#can find pearson correlation between linear and circular 
+Circ_core_plot<-ggplot(CLEAR_Pass, aes(x=FPBcirc, y=FPBlinear, color=readNumber))+
+  geom_point()+
+  stat_cor(method = "pearson")
+Circ_core_plot
+
+suppressWarnings(ggstatsplot::ggscatterstats(data = CLEAR_Pass, x = FPBcirc, y = FPBlinear, type="spearman"))
+#finds a very slight positive correlation between groups but not much explanatory power. 
+```
+
+```{r TESTING CLEAR look instead at CIRCscore}
+hist(CLEAR_Pass$CIRCscore)
+
+qq_score<-ggplot(CLEAR_Pass,aes(sample = CIRCscore)) +
+  geom_qq() + geom_qq_line()+
+  facet_wrap(~circType, scales = "free_y")
+qq_score
+#non-normal 
+
+qq_score<-ggplot(CLEAR_Pass[CLEAR_Pass$CIRCscore<10,],aes(sample = CIRCscore)) +
+  geom_qq() + geom_qq_line()+
+  facet_wrap(~circType, scales = "free_y")
+qq_score
+#non-normal 
+
+wilcox.test(x=CLEAR_Pass[CLEAR_Pass$circType=="circRNA",]$CIRCscore, y=CLEAR_Pass[CLEAR_Pass$circType=="ciRNA",]$CIRCscore, alternative = "greater", paired = F)
+
+Score_box<-ggplot(data = CLEAR_Pass, aes(y=CIRCscore,x=circType))+
+  geom_boxplot()+
+  ylim(c(0,5))
+Score_box
+#wilcox did find a significantly higher CIRCscore from circRNAs vs ciRNAs
+```
+
+
+
+```{r TESTING karyoploteR chrom plot }
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("karyoploteR")
+#BiocManager::install("GenomicRanges")
+
+library(GenomicRanges)
+library(karyoploteR)
+
+
+#may want to add in repeats and gaps at some point 
+chromtable<-data.frame(chrom=unique(Nanopore$chrom)[c(2:8,1,9)],start=1,end=as.numeric(c("3466482",
+                                                                              "137250648",
+                                                                              "95628465",
+                                                                              "97635135",
+                                                                              "83711341",
+                                                                              "68161469",
+                                                                              "67910847",
+                                                                              "150518",
+                                                                              "360143")))
+
+lj_chrom<-toGRanges(chromtable)
+
+Filt_minus_circpan<-Filtered_simplest[Filtered_simplest$Run!="CircPanel-LRS",]
+Filt_minus_circpan$seq<-"Illumina"
+Filt_minus_circpan$seq[Filt_minus_circpan$Prep=="Nanopore"]<-"Nanopore"
+
+circannodata<-data.frame(chrom=Filt_minus_circpan$chrom,start=as.numeric(Filt_minus_circpan$start),end=as.numeric(Filt_minus_circpan$end),cate=Filt_minus_circpan$seq)
+
+circ_granges<-toGRanges(circannodata)
+
+#plotting 
+kp<-plotKaryotype(genome=lj_chrom)
+kpAddBaseNumbers(kp)
+kpPlotRegions(kp, data=circ_granges)
+
+#This mostly seems to work, adjust so that it's two panels one with nanopore and one with illumina 
+nanofilt<-Filt_minus_circpan[Filt_minus_circpan$seq=="Nanopore",]
+nano_granges<-toGRanges(data.frame(chrom=nanofilt$chrom,start=as.numeric(nanofilt$start),end=as.numeric(nanofilt$end)))
+illumfilt<-Filt_minus_circpan[Filt_minus_circpan$seq=="Illumina",]
+illum_granges<-toGRanges(data.frame(chrom=illumfilt$chrom,start=as.numeric(illumfilt$start),end=as.numeric(illumfilt$end)))
+
+#mostly produces the desired output, need to fine tune a bit 
+plotparams<-getDefaultPlotParams(plot.type = 2)
+plotparams$leftmargin <- 0.25
+plotparams$ideogramheight<-100
+
+chromplot<-plotKaryotype(genome=lj_chrom,plot.type = 2,plot.params = plotparams)
+kpAddBaseNumbers(chromplot)
+kpPlotRegions(chromplot, data=nano_granges,data.panel = 1, col = "blue")
+kpPlotRegions(chromplot, data=illum_granges,data.panel = 2, col = "red")
+#kpAxis(chromplot,data.panel = 1)
+#kpAxis(chromplot,data.panel = 2)
+
+
+```
+
+6b)Publication quality figures 
+
+
+
+```{r Figure 2.v2 }
+#panel A is filtering
+library("ggvenn")
+
+cbPalette <- c("#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7")
+
+#first need to reformat data so that the circRNA list contains reason for filtering 
+filter_data<-Full_data_simplest[Full_data_simplest$Run!="CircPanel-LRS",]
+filter_data$status<-"Passes Filtering"
+#mark failing annotated repeat 
+filter_data$status[filter_data$Repeat_overlap >0]<- "Overlaps Repeat"
+#mark failing trif or failing IR 
+fails_ir<-IR_results$circ_id[IR_results$IR>.2]
+fails_trif<-IR_results$circ_id[IR_results$Trifonov<.1]
+filter_data$status[filter_data$Prep=="Nanopore" & filter_data$circ_id %in% fails_ir]<-"Poor Quality Sequence"
+filter_data$status[filter_data$Prep=="Nanopore" & filter_data$circ_id %in% fails_trif]<-"Poor Quality Sequence"
+#mark failing size of 10kb
+filter_data$status[filter_data$Run=="Short_read" & filter_data$circ_len > 10000] <-"Large Size"
+
+    filter_data$status<-factor(filter_data$status,levels = c(  
+    "Poor Quality Sequence"  ,  
+    "Overlaps Repeat",
+    "Large Size","Passes Filtering" ))
+unique(filter_data$status)
+#make plot 
+Filt_f22a<- ggplot(data = filter_data, aes(x=Prep, fill=status))+
+  geom_bar()+
+  scale_fill_discrete(type = cbPalette[c(4,1,3,2)], name="Status",labels=c(  
+    "Poor Quality\nSequence"  ,  
+    "Overlaps Repeat",
+    "Large Size","Passes Filtering" ))+
+  theme_minimal()+
+  labs(title = "CircRNA Filtering")+
+  xlab("Source")+
+  ylab("CircRNA Count")+
+  theme(title = element_text(face = "bold"), legend.position = "bottom"
+)+
+  guides(fill=guide_legend(nrow=2,byrow=TRUE,title.position = "top"),color = guide_legend(override.aes = list(size = 0.3)))
+Filt_f22a 
+
+
+
+#Panel B Nanopore Vs Ciri2 Vs CLEAR Size boxplot 
+sizingdata<-unique(Filtered_simplest[Filtered_simplest$Prep!="CircPanel-LRS",c(11,3,10)])
+sizingdata$Prep[sizingdata$Prep=="CLEAR"]<-"CLEAR"
+sizingdata$Prep<-factor(x=sizingdata$Prep,levels = c("CIRI2","CLEAR","Nanopore"))
+
+Size_f22b<-ggplot(data=sizingdata,aes(x=Prep,y=circ_len))+
+  geom_boxplot()+scale_y_log10()+
+  theme_minimal()+
+  labs(title = "CircRNA Size")+
+  xlab("Source")+
+  ylab("CircRNA Size \n (log10 bp)")+
+  theme(title = element_text(face = "bold"))
+Size_f22b
+
+#Panel c Nanopore Vs CIRI2 vs CLEAR type barplot (or better)
+typedata<-merge(unique(Filtered_simplest[Filtered_simplest$Prep!="CircPanel-LRS",c(1:5,11)]),unique(Full_data_size_and_type[,c(1:5,10)]), by=c("circ_id","Run","Prep","Tissue","replicate"),all.x=T)
+unique(typedata$circ_type)
+typedata$circ_type[typedata$circ_type=="intergenic_region"]<-"Intergenic"
+typedata$circ_type[typedata$circ_type=="intergenic"]<-"Intergenic"
+typedata$circ_type[typedata$circ_type=="circRNA"]<-"Exonic"
+typedata$circ_type[typedata$circ_type=="exon"]<-"Exonic"
+typedata$circ_type[typedata$circ_type=="intron"]<-"Intronic"
+typedata$circ_type[typedata$circ_type=="ciRNA"]<-"Intronic"
+typedata$circ_type[typedata$circ_type=="antisense"]<-"Antisense"
+
+
+typedata$circ_type<-factor(typedata$circ_type,levels = c("Exonic","Intronic","Intergenic","Antisense"))
+
+Type_f22c<-ggplot(typedata, aes(x=Prep, fill=circ_type))+
+  geom_bar(position="fill")+
+  scale_fill_discrete(type = cbPalette,name="CircRNA Type")+
+  theme_minimal()+
+  labs(title = "CircRNA Type")+
+  xlab("Source")+
+  ylab("Portion")+
+  theme(title = element_text(face = "bold"), legend.position = "bottom"
+)+
+  guides(fill=guide_legend(nrow=2,byrow=TRUE,title.position = "top"),color = guide_legend(override.aes = list(size = 0.3)))
+Type_f22c
+
+#make single overall plot in half page and full page versions 
+#install.packages("cowplot")
+library(cowplot)
+fig22<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A", "B","C"), ncol = 1, nrow = 3,scale = c(1,1,1))
+fig22
+ggsave(
+  filename="figure2_v2_fullpage.pdf",
+  plot = fig22,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 225, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+)
+
+fig22_column<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A", "B","C"), ncol = 1, nrow = 3,scale = c(1,1,1))
+fig22_column
+ggsave(
+  filename="figure2_v2_column.pdf",
+  plot = fig22_column,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 85, #85 for half page width 170 for full page width
+  height = 225, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+)
+
+#install.packages("svglite")
+library(svglite)
+fig22_4combined<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A", "B","C"), ncol = 3, nrow = 1)
+fig22_4combined
+ggsave(
+  filename="figure2_v2_row4comb.svg",
+  plot = fig22_4combined,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 160, #85 for half page width 170 for full page width
+  height = 45, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+)
+```
+
+```{r Figure 3}
+#Figure describes comparisons between nanopore and illumina datasets 
+#Panel A Nanopore Vs Ciri2 Vs CLEAR circRNA venn diagram 
+
+#if (!require(devtools)) install.packages("devtools")
+#devtools::install_github("yanlinlin82/ggvenn")
+library("ggvenn")
+cbPalette <- c("#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7")
+
+CircRNA_Set<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="Nanopore" ]), CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]), CLEAR=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]))
+
+
+CircVD_f3a<-ggvenn(CircRNA_Set,show_percentage = F,fill_color = c("#56B4E9","#D55E00", "#CC79A7"))+
+  #labs(title = "CircRNA")+
+  theme(title = element_text(face = "bold"))+
+  coord_cartesian(clip="off")
+CircVD_f3a
+#Panel B Nanopore Vs Ciri2 Vs CLEAR gene venn diagram 
+Gene_Prep_Comp<-list(Nanopore=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="Nanopore"]), CIRI2=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CIRI2"]),CLEAR=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CLEAR"]))
+
+GeneVD_f3b<-ggvenn(Gene_Prep_Comp,show_percentage = F,fill_color = c("#56B4E9","#D55E00", "#CC79A7"))+
+  #labs(title = "Genes with CircRNAs")+
+  theme(title = element_text(face = "bold"))+
+  coord_cartesian(clip="off")
+GeneVD_f3b
+
+
+#Panel C Nanopore Vs Ciri2 Vs CLEAR Size boxplot 
+sizingdata<-unique(Filtered_simplest[Filtered_simplest$Prep!="CircPanel-LRS",c(11,3,10)])
+sizingdata$Prep[sizingdata$Prep=="CLEAR"]<-"CLEAR"
+sizingdata$Prep<-factor(x=sizingdata$Prep,levels = c("CIRI2","CLEAR","Nanopore"))
+
+Size_f3c<-ggplot(data=sizingdata,aes(x=Prep,y=circ_len))+
+  geom_boxplot()+scale_y_log10()+
+  theme_minimal()+
+  #labs(title = "CircRNA Size")+
+  xlab("Source")+
+  ylab("CircRNA Size \n (log10 bp)")+
+  theme(title = element_text(face = "bold"))
+Size_f3c
+
+#Panel D Nanopore Vs CIRI2 vs CLEAR type barplot (or better)
+typedata<-merge(unique(Filtered_simplest[Filtered_simplest$Prep!="CircPanel-LRS",c(1:5,11)]),unique(Full_data_size_and_type[,c(1:5,10)]), by=c("circ_id","Run","Prep","Tissue","replicate"),all.x=T)
+unique(typedata$circ_type)
+typedata$circ_type[typedata$circ_type=="intergenic_region"]<-"Intergenic"
+typedata$circ_type[typedata$circ_type=="intergenic"]<-"Intergenic"
+typedata$circ_type[typedata$circ_type=="circRNA"]<-"Exonic"
+typedata$circ_type[typedata$circ_type=="exon"]<-"Exonic"
+typedata$circ_type[typedata$circ_type=="intron"]<-"Intronic"
+typedata$circ_type[typedata$circ_type=="ciRNA"]<-"Intronic"
+typedata$circ_type[typedata$circ_type=="antisense"]<-"Antisense"
+
+
+typedata$circ_type<-factor(typedata$circ_type,levels = c("Exonic","Intronic","Intergenic","Antisense"))
+
+Type_f3d<-ggplot(typedata, aes(x=Prep, fill=circ_type))+
+  geom_bar(position="fill")+
+  scale_fill_discrete(type = cbPalette,name="CircRNA Type")+
+  theme_minimal()+
+  #labs(title = "CircRNA Type")+
+  xlab("Source")+
+  ylab("Portion")+
+  theme(title = element_text(face = "bold"),axis.text.x = element_text(size = 7))
+Type_f3d
+
+
+#install.packages("gridExtra")
+library("gridExtra")
+
+#with Cowplot
+fig3<-plot_grid(CircVD_f3a,GeneVD_f3b,Size_f3c,Type_f3d, labels=c("A", "B","C","D"), ncol = 2, nrow = 2,scale = c(.8,.8,1,1))
+fig3
+ggsave(
+  filename="figure3_v1_fullpage.pdf",
+  plot = fig3,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 225, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+)
+
+fig3_half<-plot_grid(CircVD_f3a,GeneVD_f3b,Size_f3c,Type_f3d, labels=c("A", "B","C","D"), ncol = 2, nrow = 2,scale = c(.8,.8,1,1),rel_heights =c(1,.9) )
+fig3_half
+ggsave(
+  filename="figure3_v1_half.pdf",
+  plot = fig3_half,
+  device = NULL,
+  path = NULL,
+  scale = 1,
+  width = 170, #85 for half page width 170 for full page width
+  height = 100, #Max height is 225
+  units = "mm",
+  dpi = 300,
+  limitsize = TRUE,
+  bg = NULL,
+)
+
+#NOTE: In the final publication it was decided to use hand-drawn Venn diagrams rather than the output of this figure. Because these venn diagrams are ugly and hard to scale. 
+```
+
+
+7) Summary Statistics 
+```{r Summarize unique circRNAs in datasets prior to filtering}
+length(unique(Nanopore$circ_id))
+length(unique(Full_data_simplest$circ_id[Full_data_simplest$Prep=="CIRI2"]))
+length(unique(Full_data_simplest$circ_id[Full_data_simplest$Prep=="CLEAR"]))
+
+colnames(Full_data_simplest)
+unique_unfilt_circs_table<- Full_data_simplest %>% 
+  group_by(Prep,Run,replicate) %>% 
+  summarise(count=length(unique(circ_id)))
+```
+
+```{r calculate circRNAs lost through filtering for nanopore and illumina filtering}
+
+length(unique(Nanopore_simplest_Plus_comp$circ_id))
+length(unique(Filtered_nanopore$circ_id))
+6768-4456
+
+2312/6768
+
+length(unique(Full_data_simplest$circ_id[Full_data_simplest$Run=="Short_read"]))-length(unique(Filtered_simplest$circ_id[Filtered_simplest$Run=="Short_read"]))
+
+(length(unique(Full_data_simplest$circ_id[Full_data_simplest$Run=="Short_read"]))-length(unique(Filtered_simplest$circ_id[Filtered_simplest$Run=="Short_read"])) ) /length(unique(Full_data_simplest$circ_id[Full_data_simplest$Run=="Short_read"]))
+
+
+```
+
+```{r Calculate portion of circRNAs clustered}
+length(unique(Filtered_simplest$circ_id))-length(unique(Filtered_simplest$New_ID))
+
+```
+
+```{r calculate average size of filtered circRNAs per prep}
+Size_table<-Filtered_simplest %>%  
+  group_by(Prep) %>% 
+  summarize(Average = mean(circ_len), Standard_Deviation= sd(circ_len))
+Size_table2<-Filtered_simplest %>%  
+  group_by(Run) %>% 
+  summarize(Average = mean(circ_len), Standard_Deviation= sd(circ_len))
+
+
+```
+
+```{r calculate type percentages across different methods}
+typedata<-merge(unique(Filt_minus_circpan[,c(1:5,11,12)]),unique(Full_data_size_and_type[,c(1:5,10)]))
+typedata$circ_type[typedata$circ_type=="intergenic_region"]<-"Intergenic"
+typedata$circ_type[typedata$circ_type=="intergenic"]<-"Intergenic"
+typedata$circ_type[typedata$circ_type=="circRNA"]<-"Exonic"
+typedata$circ_type[typedata$circ_type=="exon"]<-"Exonic"
+typedata$circ_type[typedata$circ_type=="intron"]<-"Intronic"
+typedata$circ_type[typedata$circ_type=="ciRNA"]<-"Intronic"
+
+typedata$circ_type<-factor(typedata$circ_type,levels = c("Exonic","Intronic","Intergenic","antisense"))
+
+type_percent <-typedata[,c(7,8)] %>% 
+  group_by(seq, circ_type)  %>% 
+    summarize(count=n()) %>% 
+    mutate(per =  prop.table(count))
+
+
+
+```
+
+
+8) Data Export 
+
+```{r format a combined dataframe of all results in order to export intersection sets}
+
+#Prep Nanopore Dataset 
+  #cut out unnessecary information and annotations that will be relabeled at the end 
+Nano_combine_prep<-Nanopore[,-c(8:10,13,14,18,21,22,24:37,40)]
+  #rename those unique columns as coming from CIRI-long 
+  colnames(Nano_combine_prep)<-c(
+  "circRNA_ID"     ,   "CIRILong_max_loops"  ,    "CIRILong_average_loops" 
+,"gene_id"    ,    "CIRILong_score"    ,      "circRNA_type"     
+,"circRNA_len"      , "CIRILong_isoform"      ,  "chrom"         
+,"start"    ,      "end"         ,   "strand"        
+, "CIRILong_splice_site"  ,  "CIRILong_equivalent_seq" ,"CIRILong_all_gene_ids"  
+,"CIRILong_read_id"      ,  "CIRILong_Circular_Consensus_Sequence"      ,      "Run"    
+, "Prep"      ,     "Tissue"      ,   "Replicate"  
+  )
+
+  Nano_combine_prep$Replicate<-as.character(Nano_combine_prep$Replicate)
+#prep CIRI2 dataset 
+CIRI2_combine_prep<-CIRI2[,-1]
+  #rename columns 
+colnames(CIRI2_combine_prep)<-c(
+    "circRNA_ID"     ,      "chrom"       ,          
+  "start"    ,    "end"         ,
+  "CIRI2_#junction_reads"  ,    "CIRI2_SM_MS_SMS",           
+ "CIRI2_#non_junction_reads",  "CIRI2_junction_reads_ratio",
+ "circRNA_type"       ,  "gene_id"           ,  
+ "strand"        ,       "CIRI2_junction_reads_ID"   ,
+ "Run"       ,    "Prep"         ,       
+ "Tissue"           ,    "Replicate"     ,      
+"circRNA_len")       
+#prep CLEAR dataset 
+CX3_combine_prep<-CX3[,-c(7:9,22:24)]
+  #adjust column names 
+colnames(CX3_combine_prep)<- c(
+  "chrom"      , "start"       ,"end"        ,
+"CLEAR_name"     ,   "CLEAR_score"   ,    "strand"     ,
+ "CLEAR_exonCount",   "CLEAR_exonSizes" ,   "CLEAR_exonOffsets" ,
+ "CLEAR_readNumber"  ,"circRNA_type" ,   "gene_id"   ,
+"CLEAR_isoformName", "CLEAR_index"   ,    "CLEAR_flankIntron",
+"CLEAR_FPBcirc"  ,   "CLEAR_FPBlinear"  , "CLEAR_CIRCscore"  ,
+ "Replicate" ,  "Run",  "Prep" ,      
+ "Tissue" ,     "circRNA_ID",  "circRNA_len"  ) 
+
+  
+
+combined<-bind_rows(Nano_combine_prep,CIRI2_combine_prep,CX3_combine_prep)
+reorderedcolnames<- c("circRNA_ID","chrom"                         
+    ,"start"                    ,"end"                            ,"strand"                     ,"gene_id"
+  ,"circRNA_type"                 ,"circRNA_len"
+    ,"Run"                 ,"Prep"                         ,"Tissue"                     ,"Replicate"
+    ,"CIRILong_max_loops"         ,"CIRILong_average_loops" 
+    ,"CIRILong_score" ,"CIRILong_isoform"                           ,"CIRILong_splice_site"       ,"CIRILong_equivalent_seq"        ,"CIRILong_all_gene_ids"      ,"CIRILong_read_id"               ,"CIRILong_Circular_Consensus_Sequence" ,"CIRI2_#junction_reads"              ,"CIRI2_SM_MS_SMS"             ,"CIRI2_#non_junction_reads"  ,"CIRI2_junction_reads_ratio"     ,"CIRI2_junction_reads_ID"         ,"CLEAR_name"               ,"CLEAR_score"                        ,"CLEAR_exonCount"          ,"CLEAR_exonSizes"                  ,"CLEAR_exonOffsets"      ,"CLEAR_readNumber"                   ,"CLEAR_isoformName"        ,"CLEAR_index"                ,"CLEAR_flankIntron"          ,"CLEAR_FPBcirc"                     ,"CLEAR_FPBlinear"         ,"CLEAR_CIRCscore") 
+combined<-combined[,reorderedcolnames]
+
+gff <- read.delim(file="../Lotusjaponicus_Gifu_v1.2_predictedGenes (2).gff3", skip=8, header=F,na.strings = c(""," ")) #reading in your .gff file
+gff <- separate(data=gff,col=V9,into=c("GeneId","Product"),sep=";human_readable_description=") #creating separate columns
+gff$GeneId <- gsub("\\..*||\\:.*||\\;.*", "", sub("ID=", "", gff$GeneId)) #removing extra text
+gffProduct <- gff %>% group_by(GeneId) %>% summarize(Product=toString(sort(unique(Product)))) #creating new dataframe with all product info for each gene
+#old code gff$Product[is.na(gff$Product)] <- 0 #replacing NAs in Product column to avoid data loss
+#above line works but is not helpful in avoiding data loss
+combined$GFF3_Annotation<-gffProduct[match(combined$gene_id,gffProduct$GeneId),]$Product
+
+combined<- combined %>% relocate(GFF3_Annotation,.after = gene_id)
+
+
+#label with cluster_ID 
+combined_filtered<-merge(combined,filtered_ids,by="circRNA_ID",all.x=F)
+
+#deduplicate
+combined_filtered<-unique(combined_filtered)
+
+```
+
+```{r export data table for the illumina-nanopore intersection}
+#install.packages("openxlsx")
+library(openxlsx)
+
+combined_filtered$seq<-"Illumina"
+combined_filtered$seq[combined_filtered$Prep=="Nanopore"]<-"Nanopore"
+combined_filtered$atg<-str_extract(string =combined_filtered$GFF3_Annotation,pattern = "AT[:digit:]G[:digit:]+")
+
+
+openxlsx::write.xlsx(x=combined_filtered,file="Full_Filtered_CircRNAs.xlsx")
+
+illum_nano_cons2<-combined_filtered %>% 
+  group_by(Cluster_ID) %>% 
+  filter(n_distinct(seq) == n_distinct(combined_filtered$seq))
+
+
+length(unique(illum_nano_cons2$Cluster_ID))
+illum_nano_cons2<-unique(illum_nano_cons2)
+illum_nano_cons2<-illum_nano_cons2[,c(40,1:39)]
+
+openxlsx::write.xlsx(x=illum_nano_cons2,file="Illumina_Nanopore_conserved_circRNAs_reformatted.xlsx")
+
+#snippet to pull info by hand, pulling only the nanopore data as that is fine for searching the database 
+illum_nano_snippet<-unique(illum_nano_cons2[complete.cases(illum_nano_cons2[,c(1:6, 23)]),c(1:8, 15:23)])
+illum_nano_snippet$atg<-str_extract(string =illum_nano_snippet$GFF3_Annotation,pattern = "AT[:digit:]G[:digit:]+")
+
+openxlsx::write.xlsx(x=illum_nano_snippet,file="Illum_nano_conserve_nano_only.xlsx")
+
+#identify total number of genes 
+length(unique(combined_filtered$gene_id))
+
+
+```
+
+
+
+```{r pull only the 7 that are in all 3 }
+illum_nano_cons3<-combined_filtered %>% 
+  group_by(Cluster_ID) %>% 
+  filter(n_distinct(Prep) == n_distinct(combined_filtered$Prep))
+openxlsx::write.xlsx(x=unique(illum_nano_cons3), file = "Fully_conserved_nanopore_2illum.xlsx")
+
+unique(illum_nano_cons3$gene_id)
+str_split(string = unique(illum_nano_cons3$GFF3_Annotation),pattern = ";",simplify = T)[,1]
+
+```
+
+
+```{r export data table of CIRI2 3x replicates }
+
+CIRI2_allReps<-combined_filtered[combined_filtered$Prep=="CIRI2",] %>% 
+  group_by(Cluster_ID) %>% 
+  filter(n_distinct(Replicate) == n_distinct(combined_filtered$Replicate[combined_filtered$Prep=="CIRI2"]))
+
+#add in the information from the other sources where these circRNAs are found (i.e. if one found in all ciri2 reps is also found in nanopore or CLEAR)
+CIRI2_allReps<-rbind(CIRI2_allReps, combined_filtered[combined_filtered$Prep!="CIRI2" & combined_filtered$Cluster_ID %in% CIRI2_allReps$Cluster_ID,])
+
+CIRI2_allReps<-CIRI2_allReps[,c(40,1:39)]
+openxlsx::write.xlsx(x=CIRI2_allReps,file="CIRI2_all_replicates.xlsx")
+
+```
+
+```{r export data table of CLEAR 3x replicates}
+
+CLEAR_allReps<-combined_filtered[combined_filtered$Prep=="CLEAR",] %>% 
+  group_by(Cluster_ID) %>% 
+  filter(n_distinct(Replicate) == n_distinct(combined_filtered$Replicate[combined_filtered$Prep=="CLEAR"]))
+
+#add in the information from the other sources where these circRNAs are found (i.e. if one found in all CLEAR reps is also found in nanopore or CIRI2)
+CLEAR_allReps<-rbind(CLEAR_allReps, combined_filtered[combined_filtered$Prep!="CLEAR" & combined_filtered$Cluster_ID %in% CLEAR_allReps$Cluster_ID,])
+
+CLEAR_allReps<-CLEAR_allReps[,c(40,1:39)]
+openxlsx::write.xlsx(x=CLEAR_allReps,file="CLEAR_all_replicates.xlsx")
+
+```
+
+```{r export data table of nanopore 2x replicates}
+Nanopore_2xReps<-combined_filtered[combined_filtered$Prep=="Nanopore",] %>% 
+  group_by(Cluster_ID) %>% 
+  filter(n_distinct(Run) >=2)
+
+#add in the information from the other sources where these circRNAs are found 
+Nanopore_2xReps<-rbind(Nanopore_2xReps, combined_filtered[combined_filtered$Prep!="Nanopore" & combined_filtered$Cluster_ID %in% Nanopore_2xReps$Cluster_ID,])
+
+Nanopore_2xReps<-Nanopore_2xReps[,c(40,1:39)]
+openxlsx::write.xlsx(x=Nanopore_2xReps,file="nanopore_atleast_2_runs.xlsx")
+
+```
+
+
+```{r export cx3}
+
+write.xlsx(x=CX3, file="Leaf_control_only_CLEAR.xlsx")
+```
+
+```{r export filtered minus circpan}
+write.xlsx(Filt_minus_circpan, file="Filtered_circs.xlsx")
+```
+
+```{r export random selection of top nanopore candidates}
+nano_mult_exp<-nanofilt %>% 
+  group_by(New_ID) %>% 
+  filter(n_distinct(Run) >1)
+
+top_nano_cands<- Nanopore[which(Nanopore$circ_id %in% nano_mult_exp$circ_id),] %>% 
+  filter(chrom %in% c("LjG1.1_chr1","LjG1.1_chr2","LjG1.1_chr3","LjG1.1_chr4","LjG1.1_chr5","LjG1.1_chr6")) %>%  
+  filter(average_loops > 1) %>%  
+  filter(circ_len > 140) %>% 
+  filter(circ_type %in% c("exon","intron"))
+
+exonic<-top_nano_cands[which(top_nano_cands$circ_type=="exon"),]
+intronic<-top_nano_cands[which(top_nano_cands$circ_type=="intron"),]
+rand_selection<-rbind(exonic[sample(nrow(exonic),20),],intronic[sample(nrow(intronic),20),])
+
+write.xlsx(x=rand_selection,file="random_selection_of_nanopore_candidates.xlsx")
+
+#filter based on appearance in multiple Runs 
+
+
+unique(Nanopore$circ_type)
+```
+
+
+```{r compare the number of reads found across each of the methods for the 18circRNAs that are found in all}
+
+scoreformmating<-illum_nano_cons2 %>% 
+  select(Cluster_ID, CIRILong_score, `CIRI2_#junction_reads`, CLEAR_readNumber) %>%
+  pivot_longer(cols = c(2:4), names_to = "Method",values_to = "Supporting_Reads")
+scoreformmating<-unique(scoreformmating[complete.cases(scoreformmating),])
+length(unique(scoreformmating$Cluster_ID))
+
+#plot it 
+Score_plot<-ggplot(data=scoreformmating) +
+  geom_bar(aes(x=Cluster_ID,y=Supporting_Reads,fill=Method),stat ="identity",position="dodge")
+Score_plot
+
+#examine density distributions for the three others
+scoreformmating2<-combined_filtered %>% 
+  select(Cluster_ID, CIRILong_score, `CIRI2_#junction_reads`, CLEAR_readNumber) %>%
+  pivot_longer(cols = c(2:4), names_to = "Method",values_to = "Supporting_Reads")
+scoreformmating2<-unique(scoreformmating2[complete.cases(scoreformmating2),])
+
+score_density<-ggplot(data=scoreformmating2)+
+  geom_density(aes(x=Supporting_Reads,fill=Method))+
+  facet_wrap(~Method, scales = "free")
+score_density
+
+#Examine correlation between CIRI2 and CLEAR 
+core_format<-combined_filtered %>% 
+  select(Cluster_ID, CIRILong_score, `CIRI2_#junction_reads`, CLEAR_readNumber) %>%
+  pivot_longer(cols = c(2:4), names_to = "Method",values_to = "Supporting_Reads")
+core_format<-unique(core_format[complete.cases(core_format),])
+
+#intersection of discovered by CLEAR and CIRI2 
+core_format<-combined_filtered %>% 
+  select(Cluster_ID, `CIRI2_#junction_reads`, CLEAR_readNumber)
+core_format<-unique(core_format[complete.cases(core_format),])
+
+core_format<-merge(cbind.data.frame(combined_filtered$Cluster_ID,combined_filtered$`CIRI2_#junction_reads`),cbind.data.frame(combined_filtered$Cluster_ID,combined_filtered$CLEAR_readNumber),by="combined_filtered$Cluster_ID" )
+colnames(core_format)<-c("Cluster_ID","CIRI2_#junction_reads","CLEAR_readNumber")
+both_coreplot<-ggplot(data=core_format, aes(x=`CIRI2_#junction_reads`,y=CLEAR_readNumber))+
+  geom_point()+
+  stat_cor()
+
+both_coreplot
+
+core_format[is.na(core_format)]<-0
+str(core_format)
+both_coreplot_NAs_Zeroed<-ggplot(data=core_format, aes(x=`CIRI2_#junction_reads`,y=CLEAR_readNumber))+
+  geom_point()+
+  stat_cor()
+
+both_coreplot_NAs_Zeroed
+```
+
+
+9) look into conservation of circRNAs across different species 
+
+```{r import AT circRNAs sheet v7 plant circbase}
+At_Circs<-read.csv(file="/Users/asabudnick/Documents/Grad_School/Research/CircRNA/ComputationalWork/Arabidopsis_PlantCircBase/ath52393_info.txt",sep = "\t",header=F)
+
+#Attempt to name columns
+PCB_colnames<-c("CircRNA_ID",
+"Alias",
+"Chromosome",
+"Start_Position","End_Position",
+#"Reference_genome",
+"Type",
+"Identification_method
+",
+"Parent_gene
+",
+#"Parent_gene_annotation",
+"Parent_gene_strand
+",
+"Alternative_splicing
+",
+"Junction_sequence","Genomic_sequence",
+"Support_reads
+",
+"Tissues
+",
+"Splicing_signals
+",
+"Number_of_exons_covered
+",
+"Sanger_sequencing_for_BSS
+",
+"PCR_primers_for_BSS",
+"Sanger_sequencing_for_FL",
+"PCR_primers_for_FL",
+"Sequences
+",
+"Assembled_circRNA_sequence
+",
+"Full-length_trsnacripts
+",
+"Genomic_sequence
+",
+"Conserved_circRNAs
+",
+"PMCS",
+"Coding_potential
+",
+"Potential_coding_position
+",
+"Potential_amino_acid_sequence
+",
+"Sponge-miRNAs
+",
+"circRNA-miRNA-mRNA_network
+",
+"Potential_function_description
+",
+"References")
+
+#These column names are incorrect because PCB doesn't have good documentation. They are correct enough to extract the appropriate columns for this analysis. 
+colnames(At_Circs)<-PCB_colnames
+
+```
+
+```{r import Glycine max Circs}
+Gm_Circs<-read.csv(file="/Users/asabudnick/Documents/Grad_School/Research/CircRNA/ComputationalWork/230712_Shoot_Only_Analysis/plant_circ_base_files/gmax9734_info.txt",sep = "\t",header=F)
+
+colnames(Gm_Circs)<-PCB_colnames
+#colnames match up just as well here as they do with the At - which is to say not very well . . . 
+```
+
+```{r import Oryza sativa (japonica) Circs}
+Os_Circs<-read.csv(file="/Users/asabudnick/Documents/Grad_School/Research/CircRNA/ComputationalWork/230712_Shoot_Only_Analysis/plant_circ_base_files/osaj43883_info.txt",sep = "\t",header=F)
+
+colnames(Os_Circs)<-PCB_colnames
+#colnames match up just as well here as they do with the At - which is to say not very well . . . 
+```
+
+```{r initial testing of conservation between Lj and At circs}
+At_conserved<-At_Circs[At_Circs[,8] %in% illum_nano_snippet$atg[!is.na(illum_nano_snippet$atg)],]
+unique(illum_nano_snippet$gene_id)
+```
+
+
+```{r TESTING in order to guage whether or not circRNAs are likely orthologs it is probably better to go by sequence which requires a blast alignment}
+
+#install blastR 
+#install.packages('rBLAST', repos = 'https://mhahsler.r-universe.dev')
+library('rBLAST')
+Sys.which("makeblastdb")
+blast_help("makeblastdb")
+
+
+#prepare fasta files for all of the junction sequences from At, Gm, and Os 
+At_junc_pcb_fasta<-character(nrow(At_Circs) * 2)
+At_junc_pcb_fasta[c(TRUE, FALSE)] <- paste0(">", At_Circs[,1])
+At_junc_pcb_fasta[c(FALSE, TRUE)] <- At_Circs[,11]
+writeLines(At_junc_pcb_fasta,"plant_circ_base_files/At_junc_pcb.fasta")
+#make At blastdb 
+makeblastdb(file="plant_circ_base_files/At_junc_pcb.fasta",dbtype = "nucl")
+
+#arabidopsis blast obj
+atbl<-blast(db="plant_circ_base_files/At_junc_pcb.fasta",type = "blastn")
+
+#prepare fasta files for all of the junction sequences from Gm
+Gm_junc_pcb_fasta<-character(nrow(Gm_Circs) * 2)
+Gm_junc_pcb_fasta[c(TRUE, FALSE)] <- paste0(">", Gm_Circs[,1])
+Gm_junc_pcb_fasta[c(FALSE, TRUE)] <- Gm_Circs[,11]
+writeLines(Gm_junc_pcb_fasta,"plant_circ_base_files/Gm_junc_pcb.fasta")
+#make At blastdb 
+makeblastdb(file="plant_circ_base_files/Gm_junc_pcb.fasta",dbtype = "nucl")
+
+#arabidopsis blast obj
+gmbl<-blast(db="plant_circ_base_files/Gm_junc_pcb.fasta",type = "blastn")
+
+
+#prepare fasta files for all of the junction sequences from Os
+#some of the rice pcb database is corrupted -likely from improrper delimiters
+#Ex row 593 remove rows that don't have a start position 
+Os_Circs2<-Os_Circs[!is.na(Os_Circs[,4]),]
+
+
+Os_junc_pcb_fasta<-character(nrow(Os_Circs2) * 2)
+Os_junc_pcb_fasta[c(TRUE, FALSE)] <- paste0(">", Os_Circs2[,1])
+Os_junc_pcb_fasta[c(FALSE, TRUE)] <- Os_Circs2[,11]
+writeLines(Os_junc_pcb_fasta,"plant_circ_base_files/Os_junc_pcb.fasta")
+#make At blastdb 
+makeblastdb(file="plant_circ_base_files/Os_junc_pcb.fasta",dbtype = "nucl")
+
+#rice blast obj
+Osbl<-blast(db="plant_circ_base_files/Os_junc_pcb.fasta",type = "blastn")
+
+
+#Illumina_nanopore_conserved dna seqs and full filtered nanopore dna seqs
+Cons_CCS<-DNAStringSet(x=illum_nano_snippet$CIRILong_Circular_Consensus_Sequence,use.names = T)
+names(Cons_CCS)<-illum_nano_snippet$circRNA_ID
+Filt_nanopore_stringset<-DNAStringSet(x=Filtered_nanopore$CCS,use.names = T)
+names(Filt_nanopore_stringset)<-Filtered_nanopore$circ_id
+
+
+#blast conserved nanopore against arabidopsis
+Cons_v_at<-predict(object = atbl,newdata = Cons_CCS)
+#blast doesn't return a match against the conserved ones. 
+
+#test with full filtered nanopore dataset 
+Filt_v_at<-predict(object=atbl,newdata = Filt_nanopore_stringset)
+#finds many hits - especially to chloroplastic circRNAs 
+#all seems to be working so can repeat for rice and soy before attempting to interpret the data
+
+#Blast conserved against Gm and Os
+
+Cons_v_Gm<-predict(object = gmbl,newdata = Cons_CCS)
+Cons_v_Os<-predict(object = Osbl,newdata = Cons_CCS)
+
+#Blast all nano vs Gm and Os 
+Filt_v_Gm<-predict(object = gmbl,newdata = Filt_nanopore_stringset)
+Filt_v_Os<-predict(object = Osbl,newdata = Filt_nanopore_stringset)
+
+#may want to instead use genomic . . . can also try to do the orthologs by gene ID and compare seq vs Gene 
+```
+
+```{r TESTING attempt with full length sequence - this will require filtering the data by ones with bad sequence}
+
+#combine tables and make master fasta 
+At_Gm_Os<-rbind(At_Circs,Gm_Circs,Os_Circs)
+#remove anyone thing that has anything other than ATGC in the full circRNA sequence
+At_Gm_Os_filt<-At_Gm_Os[!grepl(pattern="[^ATGC]",x = At_Gm_Os[,23]),]
+
+At_Gm_Os_full_circ_fasta<-character(nrow(At_Gm_Os_filt) * 2)
+At_Gm_Os_full_circ_fasta[c(TRUE, FALSE)] <- paste0(">", At_Gm_Os_filt[,1], " Parent Gene ", At_Gm_Os_filt[,8])
+At_Gm_Os_full_circ_fasta[c(FALSE, TRUE)] <- At_Gm_Os_filt[,23]
+writeLines(At_Gm_Os_full_circ_fasta,"plant_circ_base_files/At_Gm_Os_full_circ.fasta")
+
+makeblastdb(file="plant_circ_base_files/At_Gm_Os_full_circ.fasta",dbtype = "nucl")
+
+#rice blast obj
+At_Gm_Os_bldb<-blast(db="plant_circ_base_files/At_Gm_Os_full_circ.fasta",type = "blastn")
+
+#blast conserved set against all full circRNA sequences
+Cons_v_all_full_circ<-predict(object = At_Gm_Os_bldb,newdata = Cons_CCS)
+
+#blast full set of lotus against full set of at_gm_os 
+filtered_v_all_full_circ<-predict(object = At_Gm_Os_bldb, newdata = Filt_nanopore_stringset)
+```
+
+
+10. Ending notes
+```{r}
+sessionInfo()
+```
+The rest of the script hits a hiccup in knitting and has been left out of the Knitted document. Please refer to code and reach out if you are interested in repeating the results. Thank you :D. 
+
+```{r}
+knitr::knit_exit()
+```
+
+```{r explore blast results}
+#for the full filtered create a datatable of matches 
+#first let's see a distribution of e values 
+hist(x = filtered_v_all_full_circ$E,xlim = c(0,.00001),)
+#almost all of the circRNA matches have a very low e value (less than 1e-10) - this seems a reasonable filter
+#to bonferroni correct 
+.05/length(Filtered_nanopore$CCS)
+
+#1e-10 is a more stringent filter and doesn't sacrifice a great amount of data so we'll use that 
+
+#combine blast results to filtered nanopore 
+colnames(filtered_v_all_full_circ)[1:2]<-c("circ_id","ortholog_circ_id")
+Filtered_with_blast<-merge(Filtered_nanopore,y = filtered_v_all_full_circ[filtered_v_all_full_circ$E < 1e-10,],by="circ_id",all=F)
+#knitting doesn't work with vectors this long unfortunately. Kill knit above and leave in code if anybody want's to replicate 
+```
+
+```{r visualize numbers across chroms and orth orgs}
+#rename chrom
+Filtered_with_blast$chrom<-substr(Filtered_with_blast$chrom, start=8, stop=14)
+chrom_orth_plot<-ggplot(data=Filtered_with_blast) +
+  geom_bar(aes(x=chrom,fill=ortho_org))
+chrom_orth_plot
+#the vast majority are to the arabidopsis chloroplast, the second largest is to rice mitochondria 
+```
+
+```{r chrom orth plot with only genomic}
+chrom_orth_plot2<-ggplot(data=Filtered_with_blast[! Filtered_with_blast$chrom %in%c ("chloro","mito"),]) +
+  geom_bar(aes(x=chrom,fill=ortho_org))
+chrom_orth_plot2
+#now there is an unusual arabidopsis spike at chr 2. 
+```
+
+```{r figure out how many of the above are coming from highly repeated matches}
+repeated_matches<-ggplot(data = Filtered_with_blast)+
+  geom_bar(aes(x=circ_id,fill=ortho_org))+
+  facet_wrap(~chrom,scales = "free")+
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
+  
+repeated_matches
+#a great number are coming from highly repeated hits. This is likely not an ideal analysis approach 
+```
+
+
+```{r pull in bean data}
+wu2020_bean_circRNAs<-read.xlsx("wu_2020_bean_circRNAs.xlsx")
+#Lotus gene IDs provided here are not identical to ours (Lj0g3v0272679.1, LotjaGi5g1v0062500), may be from different annotation version and may not be comparable
+#wu2020_bean_circRNAs$Lotus.Best.Aligned.ID<-gsub(x = wu2020_bean_circRNAs$Lotus.Best.Aligned.ID,pattern = "Lotus_japonicus_", replacement = "")
+#wu2020_bean_circRNAs$Lotus.Best.Aligned.ID<-gsub(x = wu2020_bean_circRNAs$Lotus.Best.Aligned.ID,pattern = "Lotus_japonicus_", replacement = "")
+
+#instead use At 
+#illum_nano_snippet$atg<-str_extract(string =illum_nano_snippet$GFF3_Annotation,pattern = "AT[:digit:]G[:digit:]+")
+
+#test to see if there are any gene ID's in common
+length(which(wu2020_bean_circRNAs$Arabidopsis.Best.Aligned.ID %in% illum_nano_snippet$atg))
+#there are 604, this is likely due to NAs since there are only 17 unique genes in the illumina/nanopore overlap  
+length(unique(illum_nano_snippet$gene_id))
+illnano_complete<-illum_nano_snippet[complete.cases(illum_nano_snippet$atg),]
+length(which(wu2020_bean_circRNAs$Arabidopsis.Best.Aligned.ID %in% illnano_complete$atg))
+#it was only the NAs that were in common - this is because the arabidopsis in Wu 2020 have transcript ids
+
+wu2020_bean_circRNAs$Arabidopsis.Best.Aligned.ID<-gsub(x=wu2020_bean_circRNAs$Arabidopsis.Best.Aligned.ID, pattern="\\.\\d*", replacement = "")
+#do a quick merge 
+
+Found_in_bean<-merge(illnano_complete,wu2020_bean_circRNAs, by.x="atg", by.y="Arabidopsis.Best.Aligned.ID", all=F)
+length(unique(Found_in_bean$Cluster_ID))
+
+#still 11 . . . are they the same 11 ? 
+length(unique(At_conserved[,8]))
+unique(At_conserved[,8]) %in% unique(Found_in_bean$atg)
+unique(Found_in_bean$atg) %in% unique(At_conserved[,8]) 
+#they are not the same 11 
+
+```
+11. Stragglers 
+
+```{r Circscore density}
+
+#make density plot for CLEAR score for all circRNAs with at least 0.01 fragments per billion mapped bases 
+
+circscore_densityplot<- ggplot(data<-combined_filtered[which(combined_filtered$CLEAR_FPBlinear>0.01),], aes(x=CLEAR_CIRCscore)) +
+  geom_density()+
+  xlim(c(0,0.1))
+
+  
+circscore_densityplot
+```
+
+
