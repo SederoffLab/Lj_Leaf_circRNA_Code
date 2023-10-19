@@ -30,9 +30,6 @@ Overall analysis plan:
 1) import data from each of the 4 run types (Nanopore, CIRI2, Circexplorer3, and CircPanel_LRS)
 ```{r Import and label Nanopore Data}
 
-Recent_leaf<-read.table(file="221220_Lj_Leaf_Full_Annotated_CIRI-long-Analsis.tsv")
-#^updated
-
 Leaf_Spri<-read.table(file="221024_leaf_spri_Full_Annotated_CIRI-long-Analsis.tsv")
 
 
@@ -41,21 +38,18 @@ Leaf_Bluepippin<-read.table(file="220729_Leaf_bluepippin_isocirc_Full_Annotated.
 
   
 Leaf_Bluepippin$Run<-"Leaf_Bluepippin"
-Leaf_Bluepippin$Prep<-"Nanopore"
+Leaf_Bluepippin$Prep<-"CEnLR"
 Leaf_Bluepippin$Tissue<-"Leaf"
   
 Leaf_Spri$Run<-"Leaf_Spri"
-Leaf_Spri$Prep<-"Nanopore"
+Leaf_Spri$Prep<-"CEnLR"
 Leaf_Spri$Tissue<-"Leaf"
-  
-Recent_leaf$Run<-"Recent_Leaf"
-Recent_leaf$Prep<-"Nanopore"
-Recent_leaf$Tissue<-"Leaf"
+
 
 ```
 
 ```{r Merge Nanopore dataframes}
-Nanopore<-rbind(Leaf_Bluepippin,Leaf_Spri,Recent_leaf)
+Nanopore<-rbind(Leaf_Bluepippin,Leaf_Spri)
 Nanopore$replicate<-1
 ```
 
@@ -320,7 +314,7 @@ length_comp_plot
 
 Nanopore_simplest_Plus_comp$Size_diff<-abs(Nanopore_simplest_Plus_comp$circ_len - Nanopore_simplest_Plus_comp$ccs_len)
 
-#need to reexamine where circ_len is coming from 
+#Discrepency likely comes from a difference between the CCS and the assigned length which is also a product of CCS but probably an internal CCS that CIRI-long generates and doesn't share 
 ```
 
 ```{r filter nanopore and see how the set looks}
@@ -333,17 +327,10 @@ Filtered_nanopore<-Nanopore_simplest_Plus_comp %>%
 length(unique(Nanopore_simplest_Plus_comp$circ_id))
 length(unique(Filtered_nanopore$circ_id))
 
+(4665-4207)/4665
 
-6768-4543
-#with adjusted repeat overlap params
-6768-4456
+#458 circRNAs are filtered, apx 9.8% of nanopore data
 
-2225/6768
-#2225 circRNAs are queued to be filtered aproximately 1/3rd of the unique circRNAs
-
-#with adjusted params
-2312/6768
-#2312 are now removed which is 34% 
 ```
 
 ```{r label those that are cut in filtering and examine how they look on the plot}
@@ -431,7 +418,7 @@ head(table(unique(cbind(Filtered_simplest$New_ID, Filtered_simplest$Run))))
 library(ggVennDiagram)
 length(unique(Filtered_simplest$New_ID))
 unique(Filtered_simplest$Prep)
-All_sets<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="Nanopore" ]), CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]), CircExplorer3=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]), CircPanel=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CircPanel-LRS"]))
+All_sets<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CEnLR" ]), CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]), CircExplorer3=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]), CircPanel=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CircPanel-LRS"]))
      
 All_sets_vd<-ggVennDiagram(All_sets)
 All_sets_vd
@@ -445,7 +432,7 @@ while (!is.null(dev.list()))  dev.off()
 ##make other comparisons 
 ```{r nanopore Run comparisons}
 unique(Filtered_simplest$Run)
-Nanopore_Run_set<-list(Leaf_Bluepippin=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Bluepippin"]),Leaf_Spri=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Spri"]),Recent_Leaf=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Recent_Leaf"]))
+Nanopore_Run_set<-list(Leaf_Bluepippin=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Bluepippin"]),Leaf_Spri=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Spri"]))
 
 Nanopore_RunVD<-ggVennDiagram(Nanopore_Run_set)
 Nanopore_RunVD
@@ -456,8 +443,8 @@ print(Nanopore_RunVD)
 while (!is.null(dev.list()))  dev.off()
 ```
 
-```{r nanopore vs ciri2 vs clear venn diagram }
-Ind_Datasets_comp<-list(Leaf_Bluepippin=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Bluepippin"]),Leaf_Spri=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Spri"]),Recent_Leaf=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Recent_Leaf"]),CircExplorer3=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]),CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]))
+```{r nanopore vs ciri2 vs clear venn diagram individual runs}
+Ind_Datasets_comp<-list(Leaf_Bluepippin=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Bluepippin"]),Leaf_Spri=unique(Filtered_simplest$New_ID[Filtered_simplest$Run=="Leaf_Spri"]),CircExplorer3=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]),CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]))
 
 Ind_Datasets_comp_vd<-ggVennDiagram(Ind_Datasets_comp,label = 'count',set_size = 2)
 Ind_Datasets_comp_vd
@@ -470,7 +457,7 @@ while (!is.null(dev.list()))  dev.off()
 
 ```{r Nanopore vs Illumina VennDiagram}
 unique(Filtered_simplest$Prep)
-Nano_Vs_Illum_set<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="Nanopore" ]), Illumina=unique(Filtered_simplest$New_ID[(Filtered_simplest$Prep=="CIRI2" |Filtered_simplest$Prep=="CLEAR")]))
+Nano_Vs_Illum_set<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CEnLR" ]), Illumina=unique(Filtered_simplest$New_ID[(Filtered_simplest$Prep=="CIRI2" |Filtered_simplest$Prep=="CLEAR")]))
      
 Nano_Vs_Illum_vd<-ggVennDiagram(Nano_Vs_Illum_set)
 Nano_Vs_Illum_vd
@@ -796,7 +783,7 @@ lj_chrom<-toGRanges(chromtable)
 
 Filt_minus_circpan<-Filtered_simplest[Filtered_simplest$Run!="CircPanel-LRS",]
 Filt_minus_circpan$seq<-"Illumina"
-Filt_minus_circpan$seq[Filt_minus_circpan$Prep=="Nanopore"]<-"Nanopore"
+Filt_minus_circpan$seq[Filt_minus_circpan$Prep=="CEnLR"]<-"Nanopore"
 
 circannodata<-data.frame(chrom=Filt_minus_circpan$chrom,start=as.numeric(Filt_minus_circpan$start),end=as.numeric(Filt_minus_circpan$end),cate=Filt_minus_circpan$seq)
 
@@ -841,13 +828,17 @@ cbPalette <- c("#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7")
 #first need to reformat data so that the circRNA list contains reason for filtering 
 filter_data<-Full_data_simplest[Full_data_simplest$Run!="CircPanel-LRS",]
 filter_data$status<-"Passes Filtering"
+filter_data$Prep[filter_data$Prep=="CLEAR"]<-"CLEAR"
+filter_data$Prep<-factor(x=filter_data$Prep,levels = c("CIRI2","CLEAR","CEnLR"))
+
+
 #mark failing annotated repeat 
 filter_data$status[filter_data$Repeat_overlap >0]<- "Overlaps Repeat"
 #mark failing trif or failing IR 
 fails_ir<-IR_results$circ_id[IR_results$IR>.2]
 fails_trif<-IR_results$circ_id[IR_results$Trifonov<.1]
-filter_data$status[filter_data$Prep=="Nanopore" & filter_data$circ_id %in% fails_ir]<-"Poor Quality Sequence"
-filter_data$status[filter_data$Prep=="Nanopore" & filter_data$circ_id %in% fails_trif]<-"Poor Quality Sequence"
+filter_data$status[filter_data$Prep=="CEnLR" & filter_data$circ_id %in% fails_ir]<-"Poor Quality Sequence"
+filter_data$status[filter_data$Prep=="CEnLR" & filter_data$circ_id %in% fails_trif]<-"Poor Quality Sequence"
 #mark failing size of 10kb
 filter_data$status[filter_data$Run=="Short_read" & filter_data$circ_len > 10000] <-"Large Size"
 
@@ -877,7 +868,7 @@ Filt_f22a
 #Panel B Nanopore Vs Ciri2 Vs CLEAR Size boxplot 
 sizingdata<-unique(Filtered_simplest[Filtered_simplest$Prep!="CircPanel-LRS",c(11,3,10)])
 sizingdata$Prep[sizingdata$Prep=="CLEAR"]<-"CLEAR"
-sizingdata$Prep<-factor(x=sizingdata$Prep,levels = c("CIRI2","CLEAR","Nanopore"))
+sizingdata$Prep<-factor(x=sizingdata$Prep,levels = c("CIRI2","CLEAR","CEnLR"))
 
 Size_f22b<-ggplot(data=sizingdata,aes(x=Prep,y=circ_len))+
   geom_boxplot()+scale_y_log10()+
@@ -899,8 +890,9 @@ typedata$circ_type[typedata$circ_type=="intron"]<-"Intronic"
 typedata$circ_type[typedata$circ_type=="ciRNA"]<-"Intronic"
 typedata$circ_type[typedata$circ_type=="antisense"]<-"Antisense"
 
-
 typedata$circ_type<-factor(typedata$circ_type,levels = c("Exonic","Intronic","Intergenic","Antisense"))
+typedata$Prep<-factor(x=typedata$Prep,levels = c("CIRI2","CLEAR","CEnLR"))
+
 
 Type_f22c<-ggplot(typedata, aes(x=Prep, fill=circ_type))+
   geom_bar(position="fill")+
@@ -917,7 +909,7 @@ Type_f22c
 #make single overall plot in half page and full page versions 
 #install.packages("cowplot")
 library(cowplot)
-fig22<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A", "B","C"), ncol = 1, nrow = 3,scale = c(1,1,1))
+fig22<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A)", "B)","C)"), ncol = 1, nrow = 3,scale = c(1,1,1))
 fig22
 ggsave(
   filename="figure2_v2_fullpage.pdf",
@@ -933,7 +925,7 @@ ggsave(
   bg = NULL,
 )
 
-fig22_column<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A", "B","C"), ncol = 1, nrow = 3,scale = c(1,1,1))
+fig22_column<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A)", "B)","C)"), ncol = 1, nrow = 3,scale = c(1,1,1))
 fig22_column
 ggsave(
   filename="figure2_v2_column.pdf",
@@ -951,7 +943,7 @@ ggsave(
 
 #install.packages("svglite")
 library(svglite)
-fig22_4combined<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A", "B","C"), ncol = 3, nrow = 1)
+fig22_4combined<-plot_grid(Filt_f22a,Size_f22b,Type_f22c, labels=c("A)", "B)","C)"), ncol = 3, nrow = 1)
 fig22_4combined
 ggsave(
   filename="figure2_v2_row4comb.svg",
@@ -977,7 +969,7 @@ ggsave(
 library("ggvenn")
 cbPalette <- c("#56B4E9", "#009E73", "#0072B2", "#D55E00", "#CC79A7")
 
-CircRNA_Set<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="Nanopore" ]), CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]), CLEAR=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]))
+CircRNA_Set<-list(Nanopore=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CEnLR" ]), CIRI2=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CIRI2"]), CLEAR=unique(Filtered_simplest$New_ID[Filtered_simplest$Prep=="CLEAR"]))
 
 
 CircVD_f3a<-ggvenn(CircRNA_Set,show_percentage = F,fill_color = c("#56B4E9","#D55E00", "#CC79A7"))+
@@ -986,7 +978,7 @@ CircVD_f3a<-ggvenn(CircRNA_Set,show_percentage = F,fill_color = c("#56B4E9","#D5
   coord_cartesian(clip="off")
 CircVD_f3a
 #Panel B Nanopore Vs Ciri2 Vs CLEAR gene venn diagram 
-Gene_Prep_Comp<-list(Nanopore=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="Nanopore"]), CIRI2=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CIRI2"]),CLEAR=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CLEAR"]))
+Gene_Prep_Comp<-list(Nanopore=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CEnLR"]), CIRI2=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CIRI2"]),CLEAR=unique(Full_data_size_and_type$gene_id[Full_data_size_and_type$Prep =="CLEAR"]))
 
 GeneVD_f3b<-ggvenn(Gene_Prep_Comp,show_percentage = F,fill_color = c("#56B4E9","#D55E00", "#CC79A7"))+
   #labs(title = "Genes with CircRNAs")+
@@ -1090,9 +1082,9 @@ unique_unfilt_circs_table<- Full_data_simplest %>%
 
 length(unique(Nanopore_simplest_Plus_comp$circ_id))
 length(unique(Filtered_nanopore$circ_id))
-6768-4456
+4655-4207
 
-2312/6768
+448/4655
 
 length(unique(Full_data_simplest$circ_id[Full_data_simplest$Run=="Short_read"]))-length(unique(Filtered_simplest$circ_id[Filtered_simplest$Run=="Short_read"]))
 
@@ -1218,7 +1210,7 @@ combined_filtered<-unique(combined_filtered)
 library(openxlsx)
 
 combined_filtered$seq<-"Illumina"
-combined_filtered$seq[combined_filtered$Prep=="Nanopore"]<-"Nanopore"
+combined_filtered$seq[combined_filtered$Prep=="CEnLR"]<-"Nanopore"
 combined_filtered$atg<-str_extract(string =combined_filtered$GFF3_Annotation,pattern = "AT[:digit:]G[:digit:]+")
 
 
@@ -1249,7 +1241,7 @@ length(unique(combined_filtered$gene_id))
 
 
 
-```{r pull only the 7 that are in all 3 }
+```{r pull only the 6 that are in all 3 }
 illum_nano_cons3<-combined_filtered %>% 
   group_by(Cluster_ID) %>% 
   filter(n_distinct(Prep) == n_distinct(combined_filtered$Prep))
@@ -1290,12 +1282,12 @@ openxlsx::write.xlsx(x=CLEAR_allReps,file="CLEAR_all_replicates.xlsx")
 ```
 
 ```{r export data table of nanopore 2x replicates}
-Nanopore_2xReps<-combined_filtered[combined_filtered$Prep=="Nanopore",] %>% 
+Nanopore_2xReps<-combined_filtered[combined_filtered$Prep=="CEnLR",] %>% 
   group_by(Cluster_ID) %>% 
   filter(n_distinct(Run) >=2)
 
 #add in the information from the other sources where these circRNAs are found 
-Nanopore_2xReps<-rbind(Nanopore_2xReps, combined_filtered[combined_filtered$Prep!="Nanopore" & combined_filtered$Cluster_ID %in% Nanopore_2xReps$Cluster_ID,])
+Nanopore_2xReps<-rbind(Nanopore_2xReps, combined_filtered[combined_filtered$Prep!="CEnLR" & combined_filtered$Cluster_ID %in% Nanopore_2xReps$Cluster_ID,])
 
 Nanopore_2xReps<-Nanopore_2xReps[,c(40,1:39)]
 openxlsx::write.xlsx(x=Nanopore_2xReps,file="nanopore_atleast_2_runs.xlsx")
@@ -1335,8 +1327,28 @@ write.xlsx(x=rand_selection,file="random_selection_of_nanopore_candidates.xlsx")
 unique(Nanopore$circ_type)
 ```
 
+```{r export in final supplemental file formats}
+#Supp2 Input Data 
+xlsx::write.xlsx(x=Leaf_Bluepippin, file = "Supplementary Table S2.xlsx", sheetName = "Nanopore_BluePippin")
+xlsx::write.xlsx(x=Leaf_Bluepippin, file = "Supplementary Table S2.xlsx", sheetName = "Nanopore_SPRI",append = T)
+xlsx::write.xlsx(x=CIRI2, file="Supplementary Table S2.xlsx",sheetName = "CIRI2", append=T)
+xlsx::write.xlsx(x=CX3, file="Supplementary Table S2.xlsx",sheetName = "CLEAR", append=T)
+xlsx::write.xlsx(x=CircPANEL, file="Supplementary Table S2.xlsx",sheetName = "circPanel-LRS",append = T)
 
-```{r compare the number of reads found across each of the methods for the 18circRNAs that are found in all}
+#Supp3 Output Data
+
+Supp3List<-list("Full_Filtered_Results" = combined_filtered,"CIRI2_Found_in_All_Reps" = CIRI2_allReps, "CLEAR_Found_in_All_Reps"= CLEAR_allReps, "Nanopore_Found_in_both_runs" =  Nanopore_2xReps)
+openxlsx::write.xlsx(x=Supp3List, file = "Supplementary Table S3.xlsx")
+
+
+
+
+
+```
+
+
+
+```{r compare the number of reads found across each of the methods for the 15 circRNAs that are found in all}
 
 scoreformmating<-illum_nano_cons2 %>% 
   select(Cluster_ID, CIRILong_score, `CIRI2_#junction_reads`, CLEAR_readNumber) %>%
@@ -1480,7 +1492,6 @@ unique(illum_nano_snippet$gene_id)
 #install.packages('rBLAST', repos = 'https://mhahsler.r-universe.dev')
 library('rBLAST')
 Sys.which("makeblastdb")
-blast_help("makeblastdb")
 
 
 #prepare fasta files for all of the junction sequences from At, Gm, and Os 
@@ -1577,12 +1588,12 @@ filtered_v_all_full_circ<-predict(object = At_Gm_Os_bldb, newdata = Filt_nanopor
 
 
 10. Ending notes
-```{r}
+```{r include session info }
 sessionInfo()
 ```
 The rest of the script hits a hiccup in knitting and has been left out of the Knitted document. Please refer to code and reach out if you are interested in repeating the results. Thank you :D. 
 
-```{r}
+```{r kill knit prior to crash from large blast vector}
 knitr::knit_exit()
 ```
 
@@ -1600,6 +1611,12 @@ hist(x = filtered_v_all_full_circ$E,xlim = c(0,.00001),)
 colnames(filtered_v_all_full_circ)[1:2]<-c("circ_id","ortholog_circ_id")
 Filtered_with_blast<-merge(Filtered_nanopore,y = filtered_v_all_full_circ[filtered_v_all_full_circ$E < 1e-10,],by="circ_id",all=F)
 #knitting doesn't work with vectors this long unfortunately. Kill knit above and leave in code if anybody want's to replicate 
+Filtered_with_blast$ortho_org<-substr(x=Filtered_with_blast$ortholog_circ_id, start=1, stop=2)
+unique(Filtered_with_blast$ortho_org)
+
+#combine blast results to filtered nanopore 
+
+
 ```
 
 ```{r visualize numbers across chroms and orth orgs}
@@ -1655,6 +1672,7 @@ wu2020_bean_circRNAs$Arabidopsis.Best.Aligned.ID<-gsub(x=wu2020_bean_circRNAs$Ar
 
 Found_in_bean<-merge(illnano_complete,wu2020_bean_circRNAs, by.x="atg", by.y="Arabidopsis.Best.Aligned.ID", all=F)
 length(unique(Found_in_bean$Cluster_ID))
+length(unique(Found_in_bean$gene_id))
 
 #still 11 . . . are they the same 11 ? 
 length(unique(At_conserved[,8]))
